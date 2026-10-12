@@ -8,9 +8,14 @@ A personal macOS GPUI app for downloading your own Audible books and converting 
 
 ## Install
 
-Download `Audible-Unlock-*-macos-arm64.zip` from [Releases](https://github.com/Mokto/audible-unlock/releases) (Apple Silicon), unzip it, and move **Audible Unlock** to Applications. Install uv with `brew install uv`; FFmpeg is included. The 1Password CLI is optional.
+Requires macOS 12+ on Apple Silicon and uv (`brew install uv`). FFmpeg is included; the 1Password CLI is optional.
 
-The app is ad-hoc signed, not notarized. On first launch, right-click it and choose **Open**; or run `xattr -dr com.apple.quarantine "/Applications/Audible Unlock.app"`.
+```sh
+curl -fsSL https://github.com/Mokto/audible-unlock/releases/latest/download/Audible-Unlock-macos-arm64.zip -o /tmp/audible-unlock.zip
+ditto -x -k /tmp/audible-unlock.zip /Applications && rm /tmp/audible-unlock.zip
+```
+
+The app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). Files downloaded with `curl` are not quarantined, so it opens normally. If you download the zip from [Releases](https://github.com/Mokto/audible-unlock/releases) with a browser instead, macOS blocks the first launch: open the app once, then use **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Audible Unlock.app"`.
 
 ## Run from source
 

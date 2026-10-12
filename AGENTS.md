@@ -25,6 +25,10 @@ bash scripts/bundle.sh && codesign --verify --deep --strict "dist/Audible Unlock
 
 The WebKit tests open a real window and need a desktop session. No test hits Amazon; say so when a change touches live login, library, or download paths.
 
+## Releases
+
+Bump `Cargo.toml` (then `cargo update -p audible-unlock --offline`) and `resources/Info.plist` (`CFBundleShortVersionString`, increment `CFBundleVersion`). Build with `bash scripts/bundle.sh release`, zip with `ditto -c -k --norsrc --noextattr --noacl --keepParent`, and upload the asset as `Audible-Unlock-macos-arm64.zip`. The README install command depends on that stable name. The app is ad-hoc signed only; there is no paid Developer ID or notarization.
+
 ## Invariants
 
 - Never overwrite or delete user files. Book output and downloads are staged in a hidden `.audible-unlock-*` directory next to the target and published with `publish()` (exclusive `renamex_np`). Originals are never modified.
