@@ -1,6 +1,10 @@
 # Audible Unlock
 
-A personal macOS GPUI app for converting your own Audible AAX files into lossless, chapter-separated M4A files.
+A personal macOS GPUI app for downloading your own Audible books and converting AAX/AAXC files into lossless, chapter-separated M4A files.
+
+![Audible library with cover artwork and Download & convert buttons](docs/screenshots/library.png)
+
+**For audiobooks you own only.** Use it to keep personal, DRM-free copies of books you bought on your own Audible account. Do not use it to share or distribute audiobooks. You are responsible for following your local laws and Audible's terms.
 
 ## Run
 
@@ -40,9 +44,9 @@ Sign-in is embedded-only. There is no external-browser fallback or copied-URL fl
 
 Existing `~/.audible/activation_bytes` is picked up automatically. On the sign-in view, you can also copy an eight-character key and click **Use copied activation bytes**.
 
-Passwords are entered only into Amazon's own page. The app never extracts existing page passwords or saves passwords. With 1Password CLI autofill, it handles the selected username/password in memory and sends them through WebKit argument bindings, not string-interpolated JavaScript. Redirect URLs travel through private process pipes, exist only in memory, and are not logged. The native window discards its cookie store when it closes, and the Python helper discards its authentication session after fetching activation bytes. The activation-byte file is saved atomically with mode 0600; the optional non-secret 1Password item reference is saved in app preferences. The app does not copy sign-in URLs to the clipboard.
+Passwords are entered only into Amazon's own page. The app never extracts existing page passwords or saves passwords. With 1Password CLI autofill, it handles the selected username/password in memory and sends them through WebKit argument bindings, not string-interpolated JavaScript. Redirect URLs travel through private process pipes, exist only in memory, and are not logged. The native window discards its cookie store when it closes. The Python helper stores the registered Audible device credentials (tokens and device key, never your password) in the macOS Keychain so the library can be listed and downloaded. The activation-byte file is saved atomically with mode 0600; the optional non-secret 1Password item reference is saved in app preferences. The app does not copy sign-in URLs to the clipboard.
 
-Login uses the unofficial Python `audible` API. Amazon changes may break it. Legacy Audible username login and retaining account sessions are not implemented. Fresh authentication registers an Audible device; avoid reconnecting unnecessarily.
+Login uses the unofficial Python `audible` API. Amazon changes may break it. Legacy Audible username login is not implemented. Each login registers an Audible device; **Logout** deregisters it.
 
 ### 1Password CLI autofill
 
@@ -64,13 +68,23 @@ This is app-managed autofill, not a hosted 1Password browser extension. Live des
 
 ## Logged in: conversion view
 
-**Logout** removes `~/.audible/activation_bytes`, clears the in-app queue, and returns to the sign-in view. It does not delete original audiobooks, converted files, or unrelated authentication files. Logout is disabled during a background operation; stop conversion first.
+**Logout** deregisters this app's Audible device, removes the Keychain sign-in and `~/.audible/activation_bytes`, clears the in-app queue, and returns to the sign-in view. If Amazon cannot be reached, local data is still removed and the app asks you to remove the device under Amazon's Content and Devices settings. It does not delete original audiobooks, converted files, or unrelated authentication files. Logout is disabled during a background operation; stop conversion first.
 
 Logout is local to this Mac. Because the activation-byte file is shared with the existing CLI conversion script, that script will also need activation bytes again. Logout does not sign out of Amazon in your regular browser.
 
+## Audible library
+
+Click **Audible library** to list the downloadable single-part books in your library, newest purchases first. **Download & convert** adds a book to the queue; it downloads to `~/Downloads` and then converts like any other file.
+
+- AAX is requested first and decrypts with your activation bytes. Titles without AAX fall back to AAXC; its per-book key and IV are saved next to it as a mode-0600 `.voucher` file.
+- Downloads stream into a hidden staging directory and publish with an exclusive rename. Incomplete or cancelled downloads are discarded; existing files are never overwritten. An existing download with the same name is reused.
+- Cover artwork shows in library and queue rows. Covers download in the background after the list appears and are cached in `~/Library/Caches/audible-unlock/covers`; only HTTPS image responses up to 4 MB are kept.
+- Multi-part books, podcasts, and titles without offline rights are not listed.
+- Accounts connected by pasting activation bytes cannot browse the library; log out and log in with Amazon.
+
 ## Convert
 
-Add or drag in AAX files, then click **Convert queue**.
+Add or drag in AAX/AAXC files, or download from the library, then click **Convert queue**.
 
 - Books run sequentially; progress updates after each chapter.
 - Native AAC audio is copied without re-encoding.
@@ -82,7 +96,7 @@ Add or drag in AAX files, then click **Convert queue**.
 - A failed book stops the queue. Use **Queue again**, then **Convert queue**.
 - Cancellation stops FFmpeg and removes normal staging output. A forced quit or power loss can leave a hidden `.audible-unlock-*` temporary directory next to the source; it is not treated as completed output.
 
-M4A only. No player, downloads, library sync, MP3, or AAXC support. AAXC requires different per-book keys, not AAX activation bytes.
+M4A only. No player, library sync, or MP3. Manually added AAXC files need the matching `.voucher` next to them.
 
 ## Keyboard shortcuts
 
@@ -114,7 +128,7 @@ cargo run --locked -- --check-text
 uv run --locked python -W error::ResourceWarning -m unittest discover -s backend -v
 ```
 
-Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, and real FFmpeg chapter splitting with artwork and metadata. The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication.
+Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, Keychain round-trips with an in-memory keyring, device deregistration on logout, library filtering and codec choice, local-HTTP download publication/cancellation, AAXC voucher validation, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, and real FFmpeg chapter splitting with artwork and metadata. The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication, library listing, or downloads.
 
 ## License
 

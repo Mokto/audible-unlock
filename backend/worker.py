@@ -1,3 +1,4 @@
+import contextlib
 import ctypes
 import errno
 import json
@@ -15,6 +16,11 @@ import urllib.parse
 
 CONFIG = pathlib.Path.home() / ".audible"
 BYTES_FILE = CONFIG / "activation_bytes"
+DOWNLOADS = pathlib.Path.home() / "Downloads"
+COVERS = pathlib.Path.home() / "Library/Caches/audible-unlock/covers"
+KEYCHAIN = ("audible-unlock", "audible-device")
+LIBRARY_GROUPS = "contributors,customer_rights,media,product_attrs"
+DOWNLOAD_AGENT = "Audible/671 CFNetwork/1240.0.4 Darwin/20.6.0"
 CANCEL = threading.Event()
 INPUTS = queue.Queue()
 
@@ -75,6 +81,42 @@ def load_bytes():
     return activation_bytes(BYTES_FILE.read_text())
 
 
+def save_auth(auth):
+    import keyring
+
+    keyring.set_password(*KEYCHAIN, json.dumps(auth.to_dict()))
+
+
+def load_auth():
+    import audible
+    import keyring
+
+    raw = keyring.get_password(*KEYCHAIN)
+    if not raw:
+        raise ValueError("Log out and log in with Amazon again to browse your library. "
+                         "Pasted activation bytes cannot download books.")
+    return audible.Authenticator.from_dict(json.loads(raw))
+
+
+def has_auth():
+    import keyring
+
+    try:
+        return bool(keyring.get_password(*KEYCHAIN))
+    except Exception:
+        return False
+
+
+def forget_auth():
+    import keyring
+    import keyring.errors
+
+    try:
+        keyring.delete_password(*KEYCHAIN)
+    except keyring.errors.PasswordDeleteError:
+        pass
+
+
 def tool(name):
     found = shutil.which(name)
     if not found:
@@ -116,16 +158,29 @@ def safe_name(value):
 
 def source_path(value):
     path = pathlib.Path(value).expanduser().resolve(strict=True)
-    if path.suffix.lower() != ".aax" or not path.is_file():
-        raise ValueError("Choose an .aax file. AAXC needs different keys and is not supported.")
+    if path.suffix.lower() not in (".aax", ".aaxc") or not path.is_file():
+        raise ValueError("Choose an .aax or .aaxc audiobook.")
     return path
+
+
+def decryption(path):
+    if path.suffix.lower() == ".aax":
+        return ["-activation_bytes", load_bytes()]
+    try:
+        voucher = json.loads(path.with_suffix(".voucher").read_text())
+        key, iv = voucher["key"], voucher["iv"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError("AAXC files need the .voucher file saved next to them when downloaded.") from None
+    if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{32}", value) for value in (key, iv)):
+        raise ValueError("The .voucher file next to this AAXC file is invalid.")
+    return ["-audible_key", key, "-audible_iv", iv]
 
 
 def probe(path, key):
     raw = run(
-        [tool("ffprobe"), "-v", "error", "-activation_bytes", key, "-show_format",
+        [tool("ffprobe"), "-v", "error", *key, "-show_format",
          "-show_chapters", "-show_streams", "-of", "json", str(path)],
-        "Unable to read this AAX file. Check that it belongs to the connected account.",
+        "Unable to read this audiobook. Check that it belongs to the connected account.",
     )
     data = json.loads(raw)
     chapters = data.get("chapters", [])
@@ -143,7 +198,7 @@ def probe(path, key):
     return data, title, tags
 
 
-def publish(source, destination):
+def publish(source, destination, message="The output folder already exists. Nothing was overwritten."):
     # macOS renamex_np refuses existing destinations, including an empty directory.
     library = ctypes.CDLL(None, use_errno=True)
     rename = library.renamex_np
@@ -152,13 +207,13 @@ def publish(source, destination):
     if rename(os.fsencode(source), os.fsencode(destination), 0x4) != 0:
         code = ctypes.get_errno()
         if code in (errno.EEXIST, errno.ENOTEMPTY):
-            raise ValueError("The output folder already exists. Nothing was overwritten.")
+            raise ValueError(message)
         raise OSError(code, os.strerror(code))
 
 
 def convert(value):
     path = source_path(value)
-    key = load_bytes()
+    key = decryption(path)
     data, title, tags = probe(path, key)
     chapters = data["chapters"]
     destination = path.parent / safe_name(title)
@@ -173,7 +228,7 @@ def convert(value):
         ffmpeg = tool("ffmpeg")
         if has_cover:
             try:
-                run([ffmpeg, "-nostdin", "-v", "error", "-activation_bytes", key,
+                run([ffmpeg, "-nostdin", "-v", "error", *key,
                      "-i", str(path), "-map", "0:v:0", "-frames:v", "1", str(cover)],
                     "Unable to extract cover art.")
             except ValueError:
@@ -186,7 +241,7 @@ def convert(value):
             start = float(chapter["start_time"])
             duration = float(chapter["end_time"]) - start
             output = stage / f"{index:0{digits}d} - {safe_name(chapter_title)}.m4a"
-            args = [ffmpeg, "-nostdin", "-v", "error", "-activation_bytes", key,
+            args = [ffmpeg, "-nostdin", "-v", "error", *key,
                     "-ss", str(start), "-i", str(path)]
             if has_cover:
                 args += ["-i", str(cover)]
@@ -253,13 +308,216 @@ def login(locale):
         raise
     except Exception:
         raise ValueError("Audible login failed. Check the marketplace and try connecting again.") from None
-    emit("connected")
+    try:
+        save_auth(auth)
+    except Exception:
+        with contextlib.suppress(Exception):
+            auth.deregister_device()
+        emit("warning", message="Logged in, but the Keychain refused the Audible sign-in. "
+                                "Converting works; the library needs another login.")
+    emit("connected", library=has_auth())
 
 
 def logout():
     check_cancel()
+    try:
+        auth = load_auth()
+    except Exception:
+        auth = None
+    if auth:
+        try:
+            auth.deregister_device()
+        except Exception:
+            emit("warning", message="Amazon could not remove this app's device registration. "
+                                    "Remove it under Amazon's Content and Devices settings.")
     BYTES_FILE.unlink(missing_ok=True)
+    forget_auth()
     emit("logged_out")
+
+
+def best_codec(item):
+    codecs = [c for c in item.get("available_codecs") or [] if re.fullmatch(r"aax_\d+_\d+", c.get("name", ""))]
+    best = max(codecs, key=lambda c: tuple(map(int, c["name"][4:].split("_"))), default=None)
+    return best and best.get("enhanced_codec")
+
+
+def library_entry(item):
+    # ponytail: MultiPartBook/podcasts skipped; listing their parts needs per-parent child requests.
+    if item.get("content_delivery_type") != "SinglePartBook":
+        return None
+    if not (item.get("customer_rights") or {}).get("is_consumable_offline"):
+        return None
+    if not re.fullmatch(r"[A-Z0-9]{10}", item.get("asin") or ""):
+        return None
+    title = item.get("title") or item["asin"]
+    if item.get("subtitle"):
+        title += ": " + item["subtitle"]
+    cover = COVERS / f"{item['asin']}.jpg"
+    return {
+        "asin": item["asin"], "title": title, "codec": best_codec(item),
+        "cover": str(cover) if cover.is_file() else None,
+        "authors": ", ".join(a["name"] for a in item.get("authors") or [] if a.get("name")),
+        "minutes": item.get("runtime_length_min") or 0,
+    }
+
+
+def library():
+    import audible
+
+    auth = load_auth()
+    books, urls, page = [], {}, 1
+    with audible.Client(auth, timeout=30) as client:
+        while True:
+            check_cancel()
+            items = client.get("library", num_results=1000, page=page, response_groups=LIBRARY_GROUPS,
+                               image_sizes="252", sort_by="-PurchaseDate")["items"]
+            for item in items:
+                entry = library_entry(item)
+                if entry:
+                    books.append(entry)
+                    images = item.get("product_images") or {}
+                    url = images.get("252") or next(iter(images.values()), None)
+                    if not entry["cover"] and url:
+                        urls[entry["asin"]] = url
+            if len(items) < 1000:
+                break
+            page += 1
+    emit("library", books=books)
+    fetch_covers(urls)
+
+
+def fetch_covers(urls):
+    import concurrent.futures
+    import httpx
+
+    COVERS.mkdir(parents=True, exist_ok=True)
+
+    def fetch(asin, url):
+        if urllib.parse.urlsplit(url).scheme != "https":
+            return None
+        response = client.get(url)
+        if (response.status_code != 200 or not response.headers.get("content-type", "").startswith("image/")
+                or not 0 < len(response.content) <= 4 << 20):
+            return None
+        with tempfile.NamedTemporaryFile(dir=COVERS, delete=False) as file:
+            file.write(response.content)
+        path = COVERS / f"{asin}.jpg"
+        os.replace(file.name, path)
+        return path
+
+    with httpx.Client(timeout=20, follow_redirects=True) as client, \
+            concurrent.futures.ThreadPoolExecutor(8) as pool:
+        jobs = {pool.submit(fetch, asin, url): asin for asin, url in urls.items()}
+        try:
+            for job in concurrent.futures.as_completed(jobs):
+                check_cancel()
+                with contextlib.suppress(Exception):
+                    if path := job.result():
+                        emit("cover", asin=jobs[job], path=str(path))
+        finally:
+            for job in jobs:
+                job.cancel()
+
+
+def https_url(value):
+    if not isinstance(value, str) or urllib.parse.urlsplit(value).scheme != "https":
+        raise ValueError("Audible returned an invalid download link.")
+    return value
+
+
+def aax_url(client, auth, asin, codec):
+    response = client.session.head(
+        "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/FSDownloadContent",
+        params={"type": "AUDI", "currentTransportMethod": "WIFI", "key": asin, "codec": codec},
+        follow_redirects=False,
+    )
+    link = response.headers.get("location")
+    if not link:
+        return None
+    return https_url(link.replace("cds.audible.com", f"cds.audible.{auth.locale.domain}"))
+
+
+def aaxc_license(client, auth, asin):
+    from audible.aescipher import decrypt_voucher_from_licenserequest
+
+    response = client.post(f"content/{asin}/licenserequest", body={
+        "supported_drm_types": ["Adrm"], "quality": "High", "consumption_type": "Download",
+        "response_groups": "content_reference",
+    })
+    content = response["content_license"]
+    if content.get("status_code") != "Granted":
+        raise ValueError("Audible refused a download license for this title.")
+    voucher = decrypt_voucher_from_licenserequest(auth, response)
+    return https_url(content["content_metadata"]["content_url"]["offline_url"]), {
+        "key": voucher["key"], "iv": voucher["iv"]}
+
+
+def download(url, target):
+    import httpx
+
+    with tempfile.TemporaryDirectory(prefix=".audible-unlock-", dir=target.parent) as temp:
+        part = pathlib.Path(temp) / target.name
+        received, shown = 0, -1
+        with httpx.stream("GET", url, headers={"User-Agent": DOWNLOAD_AGENT},
+                          follow_redirects=True, timeout=60) as response:
+            response.raise_for_status()
+            total = int(response.headers.get("content-length") or 0)
+            with part.open("wb") as file:
+                for chunk in response.iter_bytes(1 << 20):
+                    check_cancel()
+                    file.write(chunk)
+                    received += len(chunk)
+                    percent = received * 100 // total if total else -1
+                    if percent != shown:
+                        shown = percent
+                        emit("download", received=received, total=total)
+        if not received or (total and received != total):
+            raise ValueError("The download was incomplete. Nothing was saved.")
+        check_cancel()
+        publish(part, target, "A file with this name already exists. Nothing was overwritten.")
+
+
+def fetch(asin):
+    import audible
+
+    if not re.fullmatch(r"[A-Z0-9]{10}", asin or ""):
+        raise ValueError("Invalid Audible title identifier.")
+    auth = load_auth()
+    with audible.Client(auth, timeout=30) as client:
+        entry = library_entry(client.get(f"library/{asin}", response_groups=LIBRARY_GROUPS)["item"])
+        if not entry:
+            raise ValueError("Audible does not allow downloading this title.")
+        DOWNLOADS.mkdir(exist_ok=True)
+        stem = safe_name(entry["title"])
+        existing = [p for p in (DOWNLOADS / f"{stem}.aax", DOWNLOADS / f"{stem}.aaxc") if p.is_file()]
+        if existing:
+            target = existing[0]
+            emit("warning", message=f"Using the existing download {target.name}.")
+        else:
+            emit("download", received=0, total=0)
+            url = entry["codec"] and aax_url(client, auth, asin, entry["codec"])
+            target = DOWNLOADS / f"{stem}.aax"
+            if not url:
+                url, voucher = aaxc_license(client, auth, asin)
+                target = DOWNLOADS / f"{stem}.aaxc"
+                write_voucher(target.with_suffix(".voucher"), voucher)
+            try:
+                download(url, target)
+            except BaseException:
+                if target.suffix == ".aaxc":
+                    target.with_suffix(".voucher").unlink(missing_ok=True)
+                raise
+    emit("downloaded", path=str(target))
+    convert(str(target))
+
+
+def write_voucher(path, voucher):
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise ValueError(f"{path.name} already exists. Nothing was overwritten.") from None
+    with os.fdopen(descriptor, "w") as file:
+        json.dump(voucher, file)
 
 
 def status():
@@ -269,7 +527,7 @@ def status():
         ready = True
     except (ValueError, OSError):
         pass
-    emit("status", connected=ready, ffmpeg=bool(shutil.which("ffmpeg")),
+    emit("status", connected=ready, library=ready and has_auth(), ffmpeg=bool(shutil.which("ffmpeg")),
          ffprobe=bool(shutil.which("ffprobe")))
 
 
@@ -283,6 +541,10 @@ def main():
             logout()
         elif action == "convert":
             convert(sys.argv[2])
+        elif action == "library":
+            library()
+        elif action == "fetch":
+            fetch(sys.argv[2])
         elif action == "login":
             login(sys.argv[2])
         elif action == "save":
@@ -302,6 +564,9 @@ def main():
         return 2
     except (ValueError, OSError, KeyError, TypeError) as error:
         emit("error", message=str(error))
+        return 1
+    except Exception:
+        emit("error", message="The Audible request failed. Check your connection and try again.")
         return 1
     return 0
 
