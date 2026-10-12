@@ -2,6 +2,10 @@
 
 A personal macOS GPUI app for downloading your own Audible books and converting AAX/AAXC files into lossless, chapter-separated M4A files.
 
+![Audible library with cover artwork and Download & convert buttons](docs/screenshots/library.png)
+
+**For audiobooks you own only.** Use it to keep personal, DRM-free copies of books you bought on your own Audible account. Do not use it to share or distribute audiobooks. You are responsible for following your local laws and Audible's terms.
+
 ## Run
 
 Requires Rust, the macOS Command Line Tools, uv, and FFmpeg:
