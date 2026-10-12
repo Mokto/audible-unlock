@@ -11,6 +11,7 @@ Personal macOS app: GPUI (Rust) frontend, Python JSON-lines backend, native Swif
 - `backend/worker.py` — actions: `status`, `login`, `save`, `logout`, `library`, `fetch`, `convert`. One process per action; events are JSON lines on stdout; `{"kind":"cancel"}` on stdin cancels.
 - `backend/test_worker.py` — Python tests (in-memory keyring, local HTTP server, real FFmpeg).
 - `build.rs` compiles the Swift helper with `xcrun swiftc`; `scripts/bundle.sh` builds and ad-hoc signs `dist/Audible Unlock.app`.
+- `scripts/build-ffmpeg.sh` builds the bundled static FFmpeg/ffprobe into `target/ffmpeg-<version>`. The app puts its own `Contents/MacOS` first on the worker's PATH. Keep the build LGPL-only (never `--enable-gpl`/`--enable-nonfree`); if the worker starts using a new FFmpeg feature, enable that component there.
 
 ## Checks (run all before committing)
 

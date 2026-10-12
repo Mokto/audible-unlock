@@ -304,6 +304,21 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".audible-unlock-*")), [])
         self.assertEqual(json.loads(events.getvalue().splitlines()[-1])["kind"], "done")
 
+    def test_bundled_minimal_ffmpeg_converts(self):
+        bundled = pathlib.Path(__file__).parents[1] / "target/ffmpeg-9.0.2/bin"
+        if not (bundled / "ffmpeg").is_file():
+            self.skipTest("run scripts/build-ffmpeg.sh first")
+        source = self.make_book()
+        worker.save_bytes("1234abcd")
+        with patch.object(worker, "tool", lambda name: str(bundled / name)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            worker.convert(str(source))
+        chapters = sorted((self.root / "Demo_ Book").glob("*.m4a"))
+        self.assertEqual(len(chapters), 2)
+        streams = json.loads(subprocess.check_output([
+            str(bundled / "ffprobe"), "-v", "error", "-show_streams", "-of", "json", str(chapters[0])]))["streams"]
+        self.assertEqual(sorted(s["codec_name"] for s in streams), ["aac", "mjpeg"])
+
     def test_failed_conversion_cleans_staging(self):
         source = self.make_book()
         worker.save_bytes("1234abcd")

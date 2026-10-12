@@ -120,7 +120,7 @@ def forget_auth():
 def tool(name):
     found = shutil.which(name)
     if not found:
-        raise ValueError(f"{name} is missing. Install it with: brew install ffmpeg")
+        raise ValueError(f"{name} is missing. Rebuild the app with scripts/bundle.sh, or install it with: brew install ffmpeg")
     return found
 
 

@@ -8,7 +8,7 @@ A personal macOS GPUI app for downloading your own Audible books and converting 
 
 ## Install
 
-Download `Audible-Unlock-*-macos-arm64.zip` from [Releases](https://github.com/Mokto/audible-unlock/releases) (Apple Silicon), unzip it, and move **Audible Unlock** to Applications. Install the runtime tools with `brew install uv ffmpeg`. The 1Password CLI is optional.
+Download `Audible-Unlock-*-macos-arm64.zip` from [Releases](https://github.com/Mokto/audible-unlock/releases) (Apple Silicon), unzip it, and move **Audible Unlock** to Applications. Install uv with `brew install uv`; FFmpeg is included. The 1Password CLI is optional.
 
 The app is ad-hoc signed, not notarized. On first launch, right-click it and choose **Open**; or run `xattr -dr com.apple.quarantine "/Applications/Audible Unlock.app"`.
 
@@ -30,7 +30,7 @@ bash scripts/bundle.sh
 open "dist/Audible Unlock.app"
 ```
 
-Use `bash scripts/bundle.sh release` for an optimized build. The bundle includes a native Swift/WebKit login helper, the Python helper, and its dependency lockfile, but still requires installed uv and FFmpeg. Cargo compiles the native helper with the macOS Command Line Tools. On first launch uv prepares a Python environment in `~/Library/Caches/audible-unlock/python`; this can require internet access. The bundle is ad-hoc signed, not developer-signed or notarized. It is a personal app, not a standalone distribution.
+Use `bash scripts/bundle.sh release` for an optimized build. The bundle includes a native Swift/WebKit login helper, the Python helper and its dependency lockfile, and a minimal static FFmpeg/ffprobe, but still requires installed uv. `scripts/build-ffmpeg.sh` builds FFmpeg 9.0.2 from the checksum-pinned upstream tarball (about a minute, cached in `target/`) with only the components conversion needs, LGPL-only; its license and source reference ship in `Contents/Resources/ffmpeg`. Homebrew FFmpeg is still used by `cargo run` and the tests. Cargo compiles the native helper with the macOS Command Line Tools. On first launch uv prepares a Python environment in `~/Library/Caches/audible-unlock/python`; this can require internet access. The bundle is ad-hoc signed, not developer-signed or notarized. It is a personal app, not a standalone distribution.
 
 GPUI is pinned to 0.2.2. The `font-kit` feature enables native macOS text rendering; disabling it silently selects a no-op text renderer. Metal shaders compile at runtime, so the full Xcode app is not required.
 
@@ -134,7 +134,7 @@ cargo run --locked -- --check-text
 uv run --locked python -W error::ResourceWarning -m unittest discover -s backend -v
 ```
 
-Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, Keychain round-trips with an in-memory keyring, device deregistration on logout, library filtering and codec choice, local-HTTP download publication/cancellation, AAXC voucher validation, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, and real FFmpeg chapter splitting with artwork and metadata. The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication, library listing, or downloads.
+Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, Keychain round-trips with an in-memory keyring, device deregistration on logout, library filtering and codec choice, local-HTTP download publication/cancellation, AAXC voucher validation, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, and real FFmpeg chapter splitting with artwork and metadata (also run against the bundled minimal FFmpeg once `scripts/build-ffmpeg.sh` has built it). The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication, library listing, or downloads.
 
 ## License
 

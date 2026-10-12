@@ -48,8 +48,12 @@ fn project_root() -> PathBuf {
 
 fn process_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| format!("{}:", dir.display())))
+        .unwrap_or_default();
     format!(
-        "/opt/homebrew/bin:/usr/local/bin:{home}/.local/bin:{home}/.cargo/bin:{}",
+        "{bundled}/opt/homebrew/bin:/usr/local/bin:{home}/.local/bin:{home}/.cargo/bin:{}",
         std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into())
     )
 }
@@ -196,7 +200,9 @@ fn conversion_blocker(
         Some(Operation::Converting) => {
             Some("Conversion is running. The next book starts automatically.")
         }
-        _ if !dependencies => Some("Install FFmpeg before converting: brew install ffmpeg"),
+        _ if !dependencies => {
+            Some("FFmpeg is missing. Rebuild the app bundle or run: brew install ffmpeg")
+        }
         _ if !connected => Some("Connect to Audible or paste activation bytes before converting."),
         _ => None,
     }
@@ -372,7 +378,8 @@ impl Unlock {
                     self.library_ready = event["library"] == true;
                     self.dependencies = event["ffmpeg"] == true && event["ffprobe"] == true;
                     self.message = if !self.dependencies {
-                        "FFmpeg is missing. Install it with: brew install ffmpeg".into()
+                        "FFmpeg is missing. Rebuild the app bundle or run: brew install ffmpeg"
+                            .into()
                     } else if self.connected {
                         "Ready. Add AAX files to get started.".into()
                     } else {
