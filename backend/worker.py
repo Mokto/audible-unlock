@@ -17,6 +17,7 @@ import urllib.parse
 CONFIG = pathlib.Path.home() / ".audible"
 BYTES_FILE = CONFIG / "activation_bytes"
 DOWNLOADS = pathlib.Path.home() / "Downloads"
+COVERS = pathlib.Path.home() / "Library/Caches/audible-unlock/covers"
 KEYCHAIN = ("audible-unlock", "audible-device")
 LIBRARY_GROUPS = "contributors,customer_rights,media,product_attrs"
 DOWNLOAD_AGENT = "Audible/671 CFNetwork/1240.0.4 Darwin/20.6.0"
@@ -346,11 +347,15 @@ def library_entry(item):
         return None
     if not (item.get("customer_rights") or {}).get("is_consumable_offline"):
         return None
-    title = item.get("title") or item.get("asin")
+    if not re.fullmatch(r"[A-Z0-9]{10}", item.get("asin") or ""):
+        return None
+    title = item.get("title") or item["asin"]
     if item.get("subtitle"):
         title += ": " + item["subtitle"]
+    cover = COVERS / f"{item['asin']}.jpg"
     return {
         "asin": item["asin"], "title": title, "codec": best_codec(item),
+        "cover": str(cover) if cover.is_file() else None,
         "authors": ", ".join(a["name"] for a in item.get("authors") or [] if a.get("name")),
         "minutes": item.get("runtime_length_min") or 0,
     }
@@ -360,17 +365,58 @@ def library():
     import audible
 
     auth = load_auth()
-    books, page = [], 1
+    books, urls, page = [], {}, 1
     with audible.Client(auth, timeout=30) as client:
         while True:
             check_cancel()
             items = client.get("library", num_results=1000, page=page, response_groups=LIBRARY_GROUPS,
-                               sort_by="-PurchaseDate")["items"]
-            books += filter(None, map(library_entry, items))
+                               image_sizes="252", sort_by="-PurchaseDate")["items"]
+            for item in items:
+                entry = library_entry(item)
+                if entry:
+                    books.append(entry)
+                    images = item.get("product_images") or {}
+                    url = images.get("252") or next(iter(images.values()), None)
+                    if not entry["cover"] and url:
+                        urls[entry["asin"]] = url
             if len(items) < 1000:
                 break
             page += 1
     emit("library", books=books)
+    fetch_covers(urls)
+
+
+def fetch_covers(urls):
+    import concurrent.futures
+    import httpx
+
+    COVERS.mkdir(parents=True, exist_ok=True)
+
+    def fetch(asin, url):
+        if urllib.parse.urlsplit(url).scheme != "https":
+            return None
+        response = client.get(url)
+        if (response.status_code != 200 or not response.headers.get("content-type", "").startswith("image/")
+                or not 0 < len(response.content) <= 4 << 20):
+            return None
+        with tempfile.NamedTemporaryFile(dir=COVERS, delete=False) as file:
+            file.write(response.content)
+        path = COVERS / f"{asin}.jpg"
+        os.replace(file.name, path)
+        return path
+
+    with httpx.Client(timeout=20, follow_redirects=True) as client, \
+            concurrent.futures.ThreadPoolExecutor(8) as pool:
+        jobs = {pool.submit(fetch, asin, url): asin for asin, url in urls.items()}
+        try:
+            for job in concurrent.futures.as_completed(jobs):
+                check_cancel()
+                with contextlib.suppress(Exception):
+                    if path := job.result():
+                        emit("cover", asin=jobs[job], path=str(path))
+        finally:
+            for job in jobs:
+                job.cancel()
 
 
 def https_url(value):

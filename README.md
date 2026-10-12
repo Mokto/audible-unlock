@@ -74,6 +74,7 @@ Click **Audible library** to list the downloadable single-part books in your lib
 
 - AAX is requested first and decrypts with your activation bytes. Titles without AAX fall back to AAXC; its per-book key and IV are saved next to it as a mode-0600 `.voucher` file.
 - Downloads stream into a hidden staging directory and publish with an exclusive rename. Incomplete or cancelled downloads are discarded; existing files are never overwritten. An existing download with the same name is reused.
+- Cover artwork shows in library and queue rows. Covers download in the background after the list appears and are cached in `~/Library/Caches/audible-unlock/covers`; only HTTPS image responses up to 4 MB are kept.
 - Multi-part books, podcasts, and titles without offline rights are not listed.
 - Accounts connected by pasting activation bytes cannot browse the library; log out and log in with Amazon.
 

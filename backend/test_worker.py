@@ -42,7 +42,7 @@ class WorkerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
         self.config = patch.multiple(worker, CONFIG=self.root / "config", BYTES_FILE=self.root / "config/key",
-                                     DOWNLOADS=self.root)
+                                     DOWNLOADS=self.root, COVERS=self.root / "covers")
         self.config.start()
         self.previous_keyring = keyring.get_keyring()
         self.keyring = MemoryKeyring()
@@ -118,7 +118,11 @@ class WorkerTests(unittest.TestCase):
                                      {"name": "aax_44_64", "enhanced_codec": "LC_64"}]}
         entry = worker.library_entry(book)
         self.assertEqual(entry, {"asin": "B000000001", "title": "Sourcery: Discworld 5", "codec": "LC_128",
-                                 "authors": "Terry Pratchett", "minutes": 400})
+                                 "cover": None, "authors": "Terry Pratchett", "minutes": 400})
+        worker.COVERS.mkdir()
+        (worker.COVERS / "B000000001.jpg").write_bytes(b"jpeg")
+        self.assertEqual(worker.library_entry(book)["cover"], str(worker.COVERS / "B000000001.jpg"))
+        self.assertIsNone(worker.library_entry({**book, "asin": "../../evil"}))
         self.assertIsNone(worker.library_entry({**book, "available_codecs": None})["codec"])
         self.assertIsNone(worker.library_entry({**book, "content_delivery_type": "PodcastParent"}))
         self.assertIsNone(worker.library_entry({**book, "customer_rights": {"is_consumable_offline": False}}))
@@ -160,6 +164,29 @@ class WorkerTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_covers_cache_only_https_images(self):
+        responses = {
+            "https://m.media-amazon.com/good.jpg": (200, "image/jpeg", b"jpeg"),
+            "https://m.media-amazon.com/html": (200, "text/html", b"<html>"),
+            "https://m.media-amazon.com/missing": (404, "image/jpeg", b""),
+        }
+
+        def fake_get(self, url):
+            status, kind, body = responses[url]
+            return MagicMock(status_code=status, headers={"content-type": kind}, content=body)
+
+        events = io.StringIO()
+        with patch("httpx.Client.get", fake_get), contextlib.redirect_stdout(events):
+            worker.fetch_covers({"B000000001": "https://m.media-amazon.com/good.jpg",
+                                 "B000000002": "https://m.media-amazon.com/html",
+                                 "B000000003": "https://m.media-amazon.com/missing",
+                                 "B000000004": "http://m.media-amazon.com/good.jpg"})
+        path = worker.COVERS / "B000000001.jpg"
+        self.assertEqual([json.loads(line) for line in events.getvalue().splitlines()],
+                         [{"kind": "cover", "asin": "B000000001", "path": str(path)}])
+        self.assertEqual(path.read_bytes(), b"jpeg")
+        self.assertEqual(sorted(p.name for p in worker.COVERS.iterdir()), ["B000000001.jpg"])
 
     def test_aaxc_uses_private_voucher_and_rejects_bad_keys(self):
         book = self.root / "Book.aaxc"

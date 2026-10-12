@@ -2,8 +2,8 @@ mod login_browser;
 
 use gpui::{
     App, Application, Bounds, Context, Div, ElementId, ExternalPaths, FocusHandle, KeyBinding,
-    PathPromptOptions, SharedString, Stateful, Window, WindowBounds, WindowOptions, actions, div,
-    prelude::*, px, rgb, size,
+    PathPromptOptions, SharedString, Stateful, StyledImage, Window, WindowBounds, WindowOptions,
+    actions, div, img, prelude::*, px, rgb, size,
 };
 use serde_json::{Value, json};
 use std::{
@@ -226,6 +226,32 @@ struct LibraryBook {
     asin: String,
     title: String,
     detail: String,
+    cover: Option<PathBuf>,
+}
+
+fn cover(path: Option<PathBuf>) -> gpui::AnyElement {
+    let size = px(56.);
+    match path {
+        Some(path) => img(path)
+            .size(size)
+            .flex_shrink_0()
+            .rounded_md()
+            .object_fit(gpui::ObjectFit::Cover)
+            .with_fallback(move || {
+                div()
+                    .size(size)
+                    .rounded_md()
+                    .bg(rgb(0x253148))
+                    .into_any_element()
+            })
+            .into_any_element(),
+        None => div()
+            .size(size)
+            .flex_shrink_0()
+            .rounded_md()
+            .bg(rgb(0x253148))
+            .into_any_element(),
+    }
 }
 
 fn library_books(value: &Value) -> Vec<LibraryBook> {
@@ -245,6 +271,7 @@ fn library_books(value: &Value) -> Vec<LibraryBook> {
                 } else {
                     format!("{authors} · {length}")
                 },
+                cover: book["cover"].as_str().map(PathBuf::from),
             })
         })
         .collect()
@@ -401,6 +428,16 @@ impl Unlock {
                         if books.len() == 1 { "book" } else { "books" }
                     );
                     self.library = Some(books);
+                }
+                "cover" => {
+                    if let Some(book) = self
+                        .library
+                        .iter_mut()
+                        .flatten()
+                        .find(|book| book.asin == text("asin"))
+                    {
+                        book.cover = Some(PathBuf::from(text("path")));
+                    }
                 }
                 "download" => {
                     if let Some(index) = self.active {
@@ -742,6 +779,8 @@ impl Unlock {
         {
             self.queue_running = true;
             self.next();
+        } else if self.operation == Some(Operation::LoadingLibrary) {
+            self.queue_running = true;
         }
         self.message = "Added to the queue. It downloads to ~/Downloads, then converts.".into();
     }
@@ -943,7 +982,8 @@ impl Render for Unlock {
                         };
                         let enabled = queued_state.is_none() && self.operation != Some(Operation::LoggingOut);
                         let choice = book.clone();
-                        div().flex_shrink_0().p_4().rounded_xl().bg(rgb(0x192231)).flex().items_center().justify_between().gap_3()
+                        div().flex_shrink_0().p_3().rounded_xl().bg(rgb(0x192231)).flex().items_center().justify_between().gap_3()
+                            .child(cover(book.cover.clone()))
                             .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                                 .child(div().child(book.title.clone()))
                                 .child(div().text_sm().text_color(rgb(0x94a3b8)).child(book.detail.clone())))
@@ -961,8 +1001,10 @@ impl Render for Unlock {
                 .children(self.books.iter().enumerate().map(|(index, book)| {
                     let output = book.output.clone();
                     let retry = matches!(book.state, State::Failed | State::Cancelled);
+                    let artwork = book.asin.as_ref().and_then(|asin| self.library.iter().flatten().find(|entry| &entry.asin == asin)).and_then(|entry| entry.cover.clone());
                     div().flex_shrink_0().p_4().rounded_xl().bg(rgb(0x192231)).flex().flex_col().gap_2()
-                        .child(div().flex().justify_between().gap_3()
+                        .child(div().flex().items_center().justify_between().gap_3()
+                            .when(artwork.is_some(), |element| element.child(cover(artwork)))
                             .child(div().flex_1().min_w_0().child(book.title.clone()))
                             .when_some(output, |element, path| element.child(
                                 button(("finder", index), "Show in Finder", true)
@@ -1095,13 +1137,15 @@ mod tests {
     #[test]
     fn library_rows_skip_invalid_entries_and_format_length() {
         let books = library_books(&json!([
-            {"asin": "B000000001", "title": "Sourcery", "authors": "Terry Pratchett", "minutes": 425},
+            {"asin": "B000000001", "title": "Sourcery", "authors": "Terry Pratchett", "minutes": 425, "cover": "/tmp/B000000001.jpg"},
             {"asin": "B000000002", "title": "Anonymous", "authors": "", "minutes": 59},
             {"title": "Missing identifier"},
         ]));
         assert_eq!(books.len(), 2);
         assert_eq!(books[0].detail, "Terry Pratchett · 7 h 05 min");
         assert_eq!(books[1].detail, "0 h 59 min");
+        assert_eq!(books[0].cover, Some(PathBuf::from("/tmp/B000000001.jpg")));
+        assert_eq!(books[1].cover, None);
     }
 
     #[test]
