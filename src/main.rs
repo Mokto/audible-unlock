@@ -133,7 +133,13 @@ fn start_worker(args: Vec<String>, events: mpsc::Sender<Value>) -> Worker {
                     terminal |= matches!(
                         value["kind"].as_str(),
                         Some(
-                            "error" | "done" | "connected" | "logged_out" | "status" | "cancelled"
+                            "error"
+                                | "done"
+                                | "connected"
+                                | "logged_out"
+                                | "status"
+                                | "cancelled"
+                                | "library"
                         )
                     );
                     let _ = events.send(value);
@@ -161,6 +167,7 @@ enum Operation {
     LoginFinishing,
     SavingBytes,
     LoggingOut,
+    LoadingLibrary,
     Converting,
 }
 
@@ -185,6 +192,7 @@ fn conversion_blocker(
         }
         Some(Operation::SavingBytes) => Some("Saving activation bytes…"),
         Some(Operation::LoggingOut) => Some("Logging out…"),
+        Some(Operation::LoadingLibrary) => Some("Loading your Audible library…"),
         Some(Operation::Converting) => {
             Some("Conversion is running. The next book starts automatically.")
         }
@@ -205,6 +213,7 @@ enum State {
 
 struct Book {
     path: PathBuf,
+    asin: Option<String>,
     title: String,
     state: State,
     detail: String,
@@ -212,9 +221,41 @@ struct Book {
     output: Option<PathBuf>,
 }
 
+#[derive(Clone)]
+struct LibraryBook {
+    asin: String,
+    title: String,
+    detail: String,
+}
+
+fn library_books(value: &Value) -> Vec<LibraryBook> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|book| {
+            let minutes = book["minutes"].as_u64().unwrap_or(0);
+            let authors = book["authors"].as_str().unwrap_or_default();
+            let length = format!("{} h {:02} min", minutes / 60, minutes % 60);
+            Some(LibraryBook {
+                asin: book["asin"].as_str()?.into(),
+                title: book["title"].as_str()?.into(),
+                detail: if authors.is_empty() {
+                    length
+                } else {
+                    format!("{authors} · {length}")
+                },
+            })
+        })
+        .collect()
+}
+
 struct Unlock {
     focus: FocusHandle,
     books: Vec<Book>,
+    library: Option<Vec<LibraryBook>>,
+    library_ready: bool,
+    show_library: bool,
     connected: bool,
     dependencies: bool,
     locale: String,
@@ -261,6 +302,9 @@ impl Unlock {
         Self {
             focus,
             books: vec![],
+            library: None,
+            library_ready: false,
+            show_library: false,
             connected: false,
             dependencies: false,
             locale: "uk".into(),
@@ -298,6 +342,7 @@ impl Unlock {
             match text("kind").as_str() {
                 "status" => {
                     self.connected = event["connected"].as_bool().unwrap_or(false);
+                    self.library_ready = event["library"] == true;
                     self.dependencies = event["ffmpeg"] == true && event["ffprobe"] == true;
                     self.message = if !self.dependencies {
                         "FFmpeg is missing. Install it with: brew install ffmpeg".into()
@@ -333,16 +378,57 @@ impl Unlock {
                 "connected" => {
                     self.browser = None;
                     self.connected = true;
+                    self.library_ready = event["library"] == true;
                     self.login_url = None;
                     self.message = "Logged in. Add AAX files to begin converting.".into();
                 }
                 "logged_out" => {
                     self.connected = false;
                     self.books.clear();
+                    self.library = None;
+                    self.library_ready = false;
+                    self.show_library = false;
                     self.browser = None;
                     self.login_url = None;
                     self.queue_running = false;
-                    self.message = "Logged out. Saved activation bytes were removed; your audiobook files are unchanged.".into();
+                    self.message = "Logged out. Activation bytes and the Keychain sign-in were removed; your audiobook files are unchanged.".into();
+                }
+                "library" => {
+                    let books = library_books(&event["books"]);
+                    self.message = format!(
+                        "{} downloadable {} in your library.",
+                        books.len(),
+                        if books.len() == 1 { "book" } else { "books" }
+                    );
+                    self.library = Some(books);
+                }
+                "download" => {
+                    if let Some(index) = self.active {
+                        let received = event["received"].as_f64().unwrap_or(0.0);
+                        let total = event["total"].as_f64().unwrap_or(0.0);
+                        let book = &mut self.books[index];
+                        book.progress = if total > 0.0 {
+                            (received / total) as f32
+                        } else {
+                            0.0
+                        };
+                        book.detail = if total > 0.0 {
+                            format!(
+                                "Downloading · {:.0} / {:.0} MB",
+                                received / 1e6,
+                                total / 1e6
+                            )
+                        } else {
+                            "Requesting download from Audible…".into()
+                        };
+                    }
+                }
+                "downloaded" => {
+                    if let Some(index) = self.active {
+                        self.books[index].path = PathBuf::from(text("path"));
+                        self.books[index].progress = 0.0;
+                        self.books[index].detail = "Downloaded · reading chapters…".into();
+                    }
                 }
                 "book" => {
                     if let Some(index) = self.active {
@@ -398,8 +484,10 @@ impl Unlock {
                             "Sign-in cancelled. Your queued books are unchanged.".into()
                         }
                     } else if self.operation == Some(Operation::Converting) {
-                        "Conversion stopped. Completed books and original AAX files are unchanged."
+                        "Stopped. Completed books and original files are unchanged; partial downloads were discarded."
                             .into()
+                    } else if self.operation == Some(Operation::LoadingLibrary) {
+                        "Library loading cancelled.".into()
                     } else {
                         "Setup cancelled. Your queued books and saved activation bytes are unchanged.".into()
                     };
@@ -436,12 +524,11 @@ impl Unlock {
         }
         for path in paths {
             if !path.is_file()
-                || !path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("aax"))
+                || !path.extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("aax") || ext.eq_ignore_ascii_case("aaxc")
+                })
             {
-                self.message =
-                    "Only .aax files are supported. AAXC requires different keys.".into();
+                self.message = "Only .aax and .aaxc files are supported.".into();
                 continue;
             }
             let path = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -455,6 +542,7 @@ impl Unlock {
                     .to_string_lossy()
                     .into(),
                 path,
+                asin: None,
                 state: State::Queued,
                 detail: "Queued".into(),
                 progress: 0.0,
@@ -472,7 +560,7 @@ impl Unlock {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Add AAX audiobooks".into()),
+            prompt: Some("Add AAX or AAXC audiobooks".into()),
         });
         cx.spawn(async move |this, cx| match picker.await {
             Ok(Ok(Some(paths))) => {
@@ -586,15 +674,19 @@ impl Unlock {
             self.cancelling = false;
             self.active = Some(index);
             self.books[index].state = State::Running;
-            self.books[index].detail = "Reading chapters…".into();
             self.books[index].progress = 0.0;
-            self.worker = Some(start_worker(
-                vec![
-                    "convert".into(),
-                    self.books[index].path.to_string_lossy().into(),
-                ],
-                self.sender.clone(),
-            ));
+            let book = &mut self.books[index];
+            let args = match &book.asin {
+                Some(asin) if book.path.as_os_str().is_empty() => {
+                    book.detail = "Requesting download from Audible…".into();
+                    vec!["fetch".into(), asin.clone()]
+                }
+                _ => {
+                    book.detail = "Reading chapters…".into();
+                    vec!["convert".into(), book.path.to_string_lossy().into()]
+                }
+            };
+            self.worker = Some(start_worker(args, self.sender.clone()));
         } else {
             self.queue_running = false;
         }
@@ -612,6 +704,46 @@ impl Unlock {
             self.next();
         }
         cx.notify();
+    }
+
+    fn load_library(&mut self) {
+        if !self.connected || !self.library_ready || self.worker.is_some() {
+            return;
+        }
+        self.operation_failed = false;
+        self.cancelling = false;
+        self.operation = Some(Operation::LoadingLibrary);
+        self.message = "Loading your Audible library…".into();
+        self.worker = Some(start_worker(vec!["library".into()], self.sender.clone()));
+    }
+
+    fn download(&mut self, book: LibraryBook) {
+        if !self.connected || self.operation == Some(Operation::LoggingOut) {
+            return;
+        }
+        if self
+            .books
+            .iter()
+            .any(|queued| queued.asin.as_ref() == Some(&book.asin))
+        {
+            return;
+        }
+        self.books.push(Book {
+            path: PathBuf::new(),
+            asin: Some(book.asin),
+            title: book.title,
+            state: State::Queued,
+            detail: "Queued".into(),
+            progress: 0.0,
+            output: None,
+        });
+        if self.worker.is_none()
+            && conversion_blocker(None, self.connected, self.dependencies).is_none()
+        {
+            self.queue_running = true;
+            self.next();
+        }
+        self.message = "Added to the queue. It downloads to ~/Downloads, then converts.".into();
     }
 
     fn stop(&mut self) {
@@ -763,6 +895,17 @@ impl Render for Unlock {
                             .child("Activation bytes and your optional 1Password item choice are saved on this Mac. Your Amazon password and login session are not saved.")))))
             .when(self.connected, |element| element.child(
                 div().id("converter-view").flex_1().min_h_0().flex().flex_col().gap_3()
+            .child(div().flex_shrink_0().flex().gap_2()
+                .child(button("show-queue", format!("Queue · {}", self.books.len()), true)
+                    .bg(rgb(if self.show_library { 0x253148 } else { 0x435d88 }))
+                    .on_click(cx.listener(|this, _, _, cx| { this.show_library = false; cx.notify(); })))
+                .child(button("show-library", "Audible library", true)
+                    .bg(rgb(if self.show_library { 0x435d88 } else { 0x253148 }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_library = true;
+                        if this.library.is_none() { this.load_library(); }
+                        cx.notify();
+                    }))))
             .child(div().flex_shrink_0().flex().flex_col().gap_2()
                 .child(div().flex().items_center().gap_2()
                     .child(button("add", "Add AAX files  ⌘O", self.operation != Some(Operation::LoggingOut))
@@ -776,13 +919,45 @@ impl Render for Unlock {
                             .on_click(cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx))))))
                 .when_some(blocker, |element, reason| element.child(
                     div().text_sm().text_color(rgb(0xf0c484)).child(reason))))
+            .when(self.show_library, |element| element.child(
+                div().id("library").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap_2()
+                    .when(!self.library_ready, |element| element.child(
+                        div().p_4().rounded_xl().bg(rgb(0x192231)).text_sm()
+                            .child("Log out, then log in with Amazon again to browse your library. Pasted activation bytes cannot download books.")))
+                    .when(self.library_ready, |element| element.child(
+                        div().flex_shrink_0().flex().items_center().justify_between().gap_3()
+                            .child(div().text_sm().text_color(rgb(0x94a3b8)).child(match &self.library {
+                                Some(books) => format!("{} downloadable books · saved to ~/Downloads, then converted", books.len()),
+                                None if self.operation == Some(Operation::LoadingLibrary) => "Loading…".into(),
+                                None => "Library not loaded yet.".into(),
+                            }))
+                            .child(button("refresh-library", if self.operation == Some(Operation::LoadingLibrary) { "Loading…" } else { "Refresh library" }, !busy)
+                                .on_click(cx.listener(|this, _, _, cx| { this.load_library(); cx.notify(); })))))
+                    .children(self.library.iter().flatten().enumerate().map(|(index, book)| {
+                        let queued_state = self.books.iter().find(|queued| queued.asin.as_ref() == Some(&book.asin)).map(|queued| &queued.state);
+                        let label = match queued_state {
+                            Some(State::Done) => "Converted",
+                            Some(State::Failed | State::Cancelled) => "In queue · retry there",
+                            Some(_) => "In queue",
+                            None => "Download & convert",
+                        };
+                        let enabled = queued_state.is_none() && self.operation != Some(Operation::LoggingOut);
+                        let choice = book.clone();
+                        div().flex_shrink_0().p_4().rounded_xl().bg(rgb(0x192231)).flex().items_center().justify_between().gap_3()
+                            .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
+                                .child(div().child(book.title.clone()))
+                                .child(div().text_sm().text_color(rgb(0x94a3b8)).child(book.detail.clone())))
+                            .child(button(("download", index), label, enabled).when(enabled, |element| element.bg(rgb(0x32694e)))
+                                .on_click(cx.listener(move |this, _, _, cx| { this.download(choice.clone()); cx.notify(); })))
+                    }))))
+            .when(!self.show_library, |element| element
             .child(div().flex_shrink_0().text_sm().text_color(rgb(0x94a3b8))
                 .child(format!("Audiobooks · {} total · {queued} waiting", self.books.len())))
             .child(div().id("queue").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap_3()
                 .when(self.books.is_empty(), |element| element.child(
                     div().h_32().flex_shrink_0().flex().items_center().justify_center().rounded_xl().border_1()
                         .border_color(rgb(0x344155)).text_color(rgb(0x94a3b8))
-                        .child("Drop AAX files here, or choose Add AAX files.")))
+                        .child("Drop AAX files here, choose Add AAX files, or download from your Audible library.")))
                 .children(self.books.iter().enumerate().map(|(index, book)| {
                     let output = book.output.clone();
                     let retry = matches!(book.state, State::Failed | State::Cancelled);
@@ -813,7 +988,7 @@ impl Render for Unlock {
                                 .child(div().h_full().w(gpui::relative(book.progress)).rounded_full().bg(rgb(0x8ae0b1)))))
                 })))
             .child(div().flex_shrink_0().text_xs().text_color(rgb(0x94a3b8))
-                .child("Output folders are saved next to the source. Existing output folders are never replaced.")) ))
+                .child("Output folders are saved next to the source. Existing output folders are never replaced."))) ))
     }
 }
 
@@ -918,12 +1093,25 @@ mod tests {
     }
 
     #[test]
+    fn library_rows_skip_invalid_entries_and_format_length() {
+        let books = library_books(&json!([
+            {"asin": "B000000001", "title": "Sourcery", "authors": "Terry Pratchett", "minutes": 425},
+            {"asin": "B000000002", "title": "Anonymous", "authors": "", "minutes": 59},
+            {"title": "Missing identifier"},
+        ]));
+        assert_eq!(books.len(), 2);
+        assert_eq!(books[0].detail, "Terry Pratchett · 7 h 05 min");
+        assert_eq!(books[1].detail, "0 h 59 min");
+    }
+
+    #[test]
     fn backend_status_round_trip() {
         let (sender, receiver) = mpsc::channel();
         let _worker = start_worker(vec!["status".into()], sender);
         let status = receiver.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(status["kind"], "status");
         assert!(status["connected"].is_boolean());
+        assert!(status["library"].is_boolean());
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(5)).unwrap()["kind"],
             "finished"

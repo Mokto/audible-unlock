@@ -1,4 +1,5 @@
 import contextlib
+import http.server
 import io
 import json
 import pathlib
@@ -8,9 +9,31 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import keyring
+import keyring.backend
+import keyring.errors
 
 import worker
+
+
+class MemoryKeyring(keyring.backend.KeyringBackend):
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.values = {}
+
+    def get_password(self, service, username):
+        return self.values.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.values[service, username] = password
+
+    def delete_password(self, service, username):
+        if self.values.pop((service, username), None) is None:
+            raise keyring.errors.PasswordDeleteError()
 
 
 class WorkerTests(unittest.TestCase):
@@ -18,12 +41,17 @@ class WorkerTests(unittest.TestCase):
         worker.CANCEL.clear()
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
-        self.config = patch.multiple(worker, CONFIG=self.root / "config", BYTES_FILE=self.root / "config/key")
+        self.config = patch.multiple(worker, CONFIG=self.root / "config", BYTES_FILE=self.root / "config/key",
+                                     DOWNLOADS=self.root)
         self.config.start()
+        self.previous_keyring = keyring.get_keyring()
+        self.keyring = MemoryKeyring()
+        keyring.set_keyring(self.keyring)
 
     def tearDown(self):
         worker.CANCEL.clear()
         self.config.stop()
+        keyring.set_keyring(self.previous_keyring)
         self.temp.cleanup()
 
     def test_key_validation_and_permissions(self):
@@ -51,6 +79,107 @@ class WorkerTests(unittest.TestCase):
         with contextlib.redirect_stdout(events):
             worker.status()
         self.assertFalse(json.loads(events.getvalue())["connected"])
+
+    def test_logout_deregisters_device_and_forgets_keychain_even_if_amazon_fails(self):
+        for failure in [None, OSError("offline")]:
+            worker.save_bytes("abcd1234")
+            self.keyring.set_password(*worker.KEYCHAIN, "{}")
+            auth = MagicMock()
+            auth.deregister_device.side_effect = failure
+            events = io.StringIO()
+            with patch.object(worker, "load_auth", return_value=auth), contextlib.redirect_stdout(events):
+                worker.logout()
+            auth.deregister_device.assert_called_once()
+            self.assertEqual(self.keyring.values, {})
+            self.assertFalse(worker.BYTES_FILE.exists())
+            kinds = [json.loads(line)["kind"] for line in events.getvalue().splitlines()]
+            self.assertEqual(kinds, ["warning", "logged_out"] if failure else ["logged_out"])
+
+    def test_auth_round_trips_through_keychain(self):
+        auth = MagicMock()
+        auth.to_dict.return_value = {"adp_token": "synthetic"}
+        worker.save_auth(auth)
+        with patch("audible.Authenticator.from_dict", side_effect=lambda data: data):
+            self.assertEqual(worker.load_auth(), {"adp_token": "synthetic"})
+        self.assertTrue(worker.has_auth())
+        worker.forget_auth()
+        worker.forget_auth()
+        with self.assertRaises(ValueError):
+            worker.load_auth()
+
+    def test_library_lists_only_downloadable_single_books_with_best_aax_codec(self):
+        book = {"asin": "B000000001", "title": "Sourcery", "subtitle": "Discworld 5",
+                "content_delivery_type": "SinglePartBook", "runtime_length_min": 400,
+                "customer_rights": {"is_consumable_offline": True},
+                "authors": [{"name": "Terry Pratchett"}],
+                "available_codecs": [{"name": "aax_22_32", "enhanced_codec": "LC_32"},
+                                     {"name": "aax_44_128", "enhanced_codec": "LC_128"},
+                                     {"name": "mp4_44_128", "enhanced_codec": "MP4"},
+                                     {"name": "aax_44_64", "enhanced_codec": "LC_64"}]}
+        entry = worker.library_entry(book)
+        self.assertEqual(entry, {"asin": "B000000001", "title": "Sourcery: Discworld 5", "codec": "LC_128",
+                                 "authors": "Terry Pratchett", "minutes": 400})
+        self.assertIsNone(worker.library_entry({**book, "available_codecs": None})["codec"])
+        self.assertIsNone(worker.library_entry({**book, "content_delivery_type": "PodcastParent"}))
+        self.assertIsNone(worker.library_entry({**book, "customer_rights": {"is_consumable_offline": False}}))
+
+    def test_download_publishes_complete_file_without_overwriting(self):
+        payload = b"x" * (3 << 20)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_port}/book"
+        target = self.root / "Book.aax"
+        try:
+            events = io.StringIO()
+            with contextlib.redirect_stdout(events):
+                worker.download(url, target)
+            self.assertEqual(target.read_bytes(), payload)
+            progress = [json.loads(line) for line in events.getvalue().splitlines()]
+            self.assertEqual(progress[-1], {"kind": "download", "received": len(payload), "total": len(payload)})
+            target.write_bytes(b"existing")
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                worker.download(url, target)
+            self.assertEqual(target.read_bytes(), b"existing")
+            worker.CANCEL.set()
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(worker.Cancelled):
+                worker.download(url, self.root / "Other.aax")
+            self.assertFalse((self.root / "Other.aax").exists())
+            self.assertEqual(list(self.root.glob(".audible-unlock-*")), [])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_aaxc_uses_private_voucher_and_rejects_bad_keys(self):
+        book = self.root / "Book.aaxc"
+        book.write_bytes(b"audio")
+        with self.assertRaises(ValueError):
+            worker.decryption(book)
+        key, iv = "0" * 32, "f" * 32
+        worker.write_voucher(book.with_suffix(".voucher"), {"key": key, "iv": iv})
+        self.assertEqual(book.with_suffix(".voucher").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(worker.decryption(book), ["-audible_key", key, "-audible_iv", iv])
+        with self.assertRaises(ValueError):
+            worker.write_voucher(book.with_suffix(".voucher"), {"key": key, "iv": iv})
+        book.with_suffix(".voucher").write_text(json.dumps({"key": "--version", "iv": iv}))
+        with self.assertRaises(ValueError):
+            worker.decryption(book)
+
+    def test_fetch_rejects_invalid_identifiers_before_network(self):
+        for value in ["", "../../etc", "b000000001", "B00000000", None]:
+            with self.assertRaises(ValueError):
+                worker.fetch(value)
 
     def test_failed_logout_preserves_key(self):
         worker.save_bytes("abcd1234")
