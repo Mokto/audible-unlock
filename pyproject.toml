@@ -1,0 +1,5 @@
+[project]
+name = "audible-unlock-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["audible==0.9.1"]

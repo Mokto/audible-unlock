@@ -1,0 +1,11 @@
+[package]
+name = "audible-unlock"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "runtime_shaders"] }
+serde_json = "1"
+libc = "0.2"
