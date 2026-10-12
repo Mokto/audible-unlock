@@ -6,7 +6,13 @@ A personal macOS GPUI app for downloading your own Audible books and converting 
 
 **For audiobooks you own only.** Use it to keep personal, DRM-free copies of books you bought on your own Audible account. Do not use it to share or distribute audiobooks. You are responsible for following your local laws and Audible's terms.
 
-## Run
+## Install
+
+Download `Audible-Unlock-*-macos-arm64.zip` from [Releases](https://github.com/Mokto/audible-unlock/releases) (Apple Silicon), unzip it, and move **Audible Unlock** to Applications. Install the runtime tools with `brew install uv ffmpeg`. The 1Password CLI is optional.
+
+The app is ad-hoc signed, not notarized. On first launch, right-click it and choose **Open**; or run `xattr -dr com.apple.quarantine "/Applications/Audible Unlock.app"`.
+
+## Run from source
 
 Requires Rust, the macOS Command Line Tools, uv, and FFmpeg:
 
