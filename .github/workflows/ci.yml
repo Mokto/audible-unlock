@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Tests generate fixtures with Homebrew FFmpeg (lavfi + AAC encoder); the bundled build is decode-only.
+      - run: brew install ffmpeg
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/ffmpeg-*-universal
+            target/uv-*
+          key: tools-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/fetch-uv.sh') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: bash scripts/build-ffmpeg.sh
+      - run: cargo test --locked
+      - run: uv run --locked python -W error::ResourceWarning -m unittest discover -s backend -v
+      - run: bash scripts/bundle.sh release
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag matches app version
+        run: test "${GITHUB_REF_NAME#v}" = "$(plutil -extract CFBundleShortVersionString raw resources/Info.plist)"
+      # Built from scratch (no caches) so the attested artifact depends only on this commit and pinned inputs.
+      - run: bash scripts/bundle.sh release
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/Earshelf-macos-universal.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag --title "Earshelf $GITHUB_REF_NAME" \
+            dist/Earshelf-macos-universal.zip dist/Earshelf-macos-universal.zip.sha256

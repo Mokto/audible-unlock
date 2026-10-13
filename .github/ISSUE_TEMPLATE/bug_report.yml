@@ -1,0 +1,46 @@
+name: Bug or beta report
+description: Something broke, or a beta-test result for your marketplace.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste passwords, one-time codes, activation bytes, sign-in URLs, `.voucher` files, or screenshots showing them.**
+  - type: input
+    id: version
+    attributes:
+      label: Earshelf version
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 26.0, MacBook Air M2 (or Intel)
+    validations:
+      required: true
+  - type: dropdown
+    id: marketplace
+    attributes:
+      label: Audible marketplace
+      options: ["🇬🇧 UK", "🇺🇸 US", "🇩🇪 DE", "🇦🇺 AU", "🇨🇦 CA", "🇫🇷 FR"]
+    validations:
+      required: true
+  - type: checkboxes
+    id: steps
+    attributes:
+      label: What worked?
+      options:
+        - label: Sign-in (note MFA type below)
+        - label: Library loads with covers
+        - label: Download & convert (AAX)
+        - label: Download & convert (AAXC fallback)
+        - label: Converting a local file
+        - label: Logout
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The exact message shown in the app's status bar, and the steps that led to it.
+    validations:
+      required: true

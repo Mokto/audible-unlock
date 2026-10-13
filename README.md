@@ -1,6 +1,8 @@
 # Earshelf
 
-A personal macOS GPUI app for downloading your own Audible books and converting AAX/AAXC files into lossless, chapter-separated M4A files.
+Keep the Audible audiobooks you own as lossless, chapter-separated M4A files. A native macOS app (Rust + GPUI) that downloads your library and converts AAX/AAXC books, one file per chapter, ready for any player.
+
+Earshelf is an independent project, not affiliated with or endorsed by Audible or Amazon.
 
 ![Audible library with cover artwork and Download & convert buttons](docs/screenshots/library.png)
 
@@ -8,7 +10,7 @@ A personal macOS GPUI app for downloading your own Audible books and converting 
 
 ## Install
 
-Requires macOS 12+ on Apple Silicon and uv (`brew install uv`). FFmpeg is included; the 1Password CLI is optional.
+Requires macOS 12+ on Apple Silicon or Intel. Nothing else to install: FFmpeg and uv are bundled. The first launch downloads Python and two libraries (about 30 MB, once). The 1Password CLI is optional.
 
 ```sh
 curl -fsSL https://github.com/Mokto/earshelf/releases/latest/download/Earshelf-macos-universal.zip -o /tmp/earshelf.zip
@@ -17,16 +19,26 @@ ditto -x -k /tmp/earshelf.zip /Applications && rm /tmp/earshelf.zip
 
 The app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). Files downloaded with `curl` are not quarantined, so it opens normally. If you download the zip from [Releases](https://github.com/Mokto/earshelf/releases) with a browser instead, macOS blocks the first launch: open the app once, then use **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Earshelf.app"`.
 
-## Run from source
-
-Requires Rust, the macOS Command Line Tools, uv, and FFmpeg:
+Releases are built by [GitHub Actions](.github/workflows/ci.yml) from the tagged commit, with a signed build-provenance attestation. Verify a download with:
 
 ```sh
-brew install rust uv ffmpeg
+gh attestation verify Earshelf-macos-universal.zip -R Mokto/earshelf
+```
+
+If you used Audible Unlock (v0.1.x), the saved Amazon sign-in carries over. Delete the old app; reselect your 1Password login once.
+
+## Run from source
+
+Requires Rust (via rustup), the macOS Command Line Tools, uv, and FFmpeg (the tests use Homebrew FFmpeg to generate fixtures):
+
+```sh
+brew install rustup uv ffmpeg
 xcode-select --install
 uv sync --locked
 cargo run --locked
 ```
+
+`rust-toolchain.toml` selects stable Rust with both macOS targets.
 
 From Finder:
 
@@ -35,7 +47,16 @@ bash scripts/bundle.sh
 open "dist/Earshelf.app"
 ```
 
-Use `bash scripts/bundle.sh release` for an optimized build. The bundle includes a native Swift/WebKit login helper, the Python helper and its dependency lockfile, and a minimal static FFmpeg/ffprobe, but still requires installed uv. `scripts/build-ffmpeg.sh` builds FFmpeg 9.0.2 from the checksum-pinned upstream tarball (about a minute, cached in `target/`) with only the components conversion needs, LGPL-only; its license and source reference ship in `Contents/Resources/ffmpeg`. Homebrew FFmpeg is still used by `cargo run` and the tests. Cargo compiles the native helper with the macOS Command Line Tools. On first launch uv prepares a Python environment in `~/Library/Caches/earshelf/python`; this can require internet access. The bundle is ad-hoc signed, not developer-signed or notarized. It is a personal app, not a standalone distribution.
+`bash scripts/bundle.sh` builds for your Mac's architecture. `bash scripts/bundle.sh release` builds an optimized universal (Apple Silicon + Intel) app and `dist/Earshelf-macos-universal.zip` with a `.sha256`.
+
+The bundle contains:
+
+- the app and a native Swift/WebKit login helper, both universal (`lipo`);
+- the Python helper and its lockfile;
+- a minimal static FFmpeg/ffprobe: `scripts/build-ffmpeg.sh` builds FFmpeg 9.0.2 for both architectures from the checksum-pinned upstream tarball (about two minutes, cached in `target/`), LGPL-only and limited to the components conversion needs; license and source reference ship in `Contents/Resources/ffmpeg`;
+- uv: `scripts/fetch-uv.sh` downloads the checksum-pinned uv 0.13.0 release for both architectures (MIT/Apache-2.0; license in `Contents/Resources/uv`).
+
+The app runs its bundled tools first and falls back to Homebrew. On first launch uv installs Python and the pinned dependencies into `~/Library/Caches/earshelf/python`. The bundle is ad-hoc signed, not developer-signed or notarized.
 
 GPUI is pinned to 0.2.2. The `font-kit` feature enables native macOS text rendering; disabling it silently selects a no-op text renderer. Metal shaders compile at runtime, so the full Xcode app is not required.
 
