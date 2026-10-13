@@ -217,6 +217,21 @@ Settings are saved in `~/Library/Application Support/Earshelf/settings.json`; th
 
 In the native sign-in window, ⌘R retries sign-in, ⌘W closes the window, and the standard Cut/Copy/Paste/Select All shortcuts work on Amazon's fields.
 
+## Earshelf and Libation
+
+[Libation](https://github.com/rmcrackan/Libation) is the established open-source tool for this job, and it can do far more than Earshelf. It runs on Windows, macOS and Linux, supports more Audible regions (including Japan, India and Spain), handles several accounts, and adds Audiobookshelf upload, scheduled scans, naming templates, tags, a command line and Docker. It also saves books losslessly, can split them by chapter, and can convert to MP3. If you need any of that, use Libation.
+
+Earshelf does less on purpose. It is for people who have a Mac and just want their books, with as few steps as possible:
+
+- **One window, no passwords in the app.** You sign in on Amazon's own page, inside Earshelf. Amazon's code and CAPTCHA steps happen there, and Earshelf never sees your password. Libation's documentation describes entering your password and CAPTCHA in Libation itself, with a copy-and-paste of a URL from your browser as a fallback.
+- **1Password fills the sign-in for you,** including one-time codes.
+- **Almost no decisions.** There's one Mac app, one button per book, and sensible defaults. Choosing a format and a folder is optional, and there are no naming templates to learn.
+- **Nothing to set up.** Install with one command; FFmpeg and Python tooling are included.
+- **A Mac app that looks like one.** It follows macOS light and dark mode, and supports macOS 12.
+- **Verifiable downloads.** Every release has a build-provenance attestation.
+
+What Earshelf does not have: other platforms, multiple accounts, MP3 output, scheduled scans, a command line, VoiceOver support (see below) and regions beyond UK, US, DE, AU, CA and FR. It also has far fewer users than Libation, so expect rough edges. Earshelf is not affiliated with Libation. This comparison is based on Libation's public documentation.
+
 ## Known limitations
 
 - **Accessibility:** GPUI 0.2 has no accessibility tree, so **VoiceOver cannot read the interface yet**. This matters for an audiobook app; it is the biggest gap and will be revisited when GPUI gains support. The keyboard shortcuts above and the native sign-in window work without a mouse.
