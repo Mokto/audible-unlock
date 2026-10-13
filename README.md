@@ -2,7 +2,7 @@
 
 **Keep the Audible audiobooks you own, in the format you choose.** Earshelf is a free, native Mac app that signs in to your Audible account, shows your library, downloads your books and saves them as lossless, DRM-free **M4B** (one file with chapters) or **M4A** (one file per chapter). No re-encoding, so the quality is identical to what you bought.
 
-![Earshelf library with covers, author, narrator, series, length and size](docs/screenshots/library.png)
+![Earshelf library with covers, author, narrator, series, length and size](docs/screenshots/library-list.png)
 
 **For audiobooks you own only.** Use it to keep personal copies of books you bought on your own Audible account. Do not share or distribute them. You are responsible for following your local laws and Audible's terms. Earshelf is an independent project, not affiliated with or endorsed by Audible or Amazon.
 
