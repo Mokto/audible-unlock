@@ -43,6 +43,7 @@ cp pyproject.toml uv.lock "$APP/Contents/Resources/backend/"
 cp backend/worker.py "$APP/Contents/Resources/backend/backend/"
 cp resources/Info.plist "$APP/Contents/"
 cp resources/AppIcon.icns "$APP/Contents/Resources/"
+sips -z 256 256 resources/AppIcon.png --out "$APP/Contents/Resources/logo.png" >/dev/null
 for TOOL in earshelf-login ffmpeg ffprobe uv; do codesign --force --sign - "$APP/Contents/MacOS/$TOOL"; done
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"

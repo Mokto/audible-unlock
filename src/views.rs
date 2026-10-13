@@ -110,6 +110,16 @@ fn cover(path: Option<PathBuf>, side: f32, t: &Theme) -> AnyElement {
     }
 }
 
+fn logo(side: f32) -> AnyElement {
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("../Resources/logo.png")))
+        .filter(|path| path.is_file());
+    let path = bundled
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/AppIcon.png"));
+    img(path).size(px(side)).flex_shrink_0().into_any_element()
+}
+
 fn checkbox(t: &Theme, on: bool) -> Div {
     div()
         .size(px(18.))
@@ -1323,11 +1333,18 @@ impl Earshelf {
             .gap_1()
             .child(
                 div()
-                    .px_3()
+                    .px_2()
                     .pb_3()
-                    .text_xl()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("Earshelf"),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(logo(36.))
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("Earshelf"),
+                    ),
             )
             .child(self.nav_item(t, "nav-library", "Library", Section::Library, 0, cx))
             .child(self.nav_item(t, "nav-queue", "Queue", Section::Queue, pending, cx))
@@ -1430,6 +1447,7 @@ impl Earshelf {
                             .flex()
                             .flex_col()
                             .gap_1()
+                            .child(logo(72.))
                             .child(div().text_2xl().font_weight(gpui::FontWeight::BOLD).child("Earshelf"))
                             .child(
                                 div()
