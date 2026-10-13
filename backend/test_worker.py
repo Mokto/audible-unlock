@@ -313,7 +313,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(json.loads(events.getvalue().splitlines()[-1])["kind"], "done")
 
     def test_bundled_minimal_ffmpeg_converts(self):
-        bundled = pathlib.Path(__file__).parents[1] / "target/ffmpeg-9.0.2/bin"
+        bundled = pathlib.Path(__file__).parents[1] / "target/ffmpeg-9.0.2-universal/bin"
         if not (bundled / "ffmpeg").is_file():
             self.skipTest("run scripts/build-ffmpeg.sh first")
         source = self.make_book()
