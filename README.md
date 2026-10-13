@@ -38,7 +38,7 @@ uv sync --locked
 cargo run --locked
 ```
 
-`rust-toolchain.toml` selects stable Rust with both macOS targets.
+`rust-toolchain.toml` selects stable Rust with both macOS targets. Homebrew installs rustup keg-only; if Homebrew's `rust` formula is also installed, put `$(brew --prefix rustup)/bin` first in your `PATH`.
 
 From Finder:
 
