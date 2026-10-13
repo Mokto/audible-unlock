@@ -42,7 +42,8 @@ class WorkerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
         self.config = patch.multiple(worker, CONFIG=self.root / "config", BYTES_FILE=self.root / "config/key",
-                                     DOWNLOADS=self.root, COVERS=self.root / "covers")
+                                     DOWNLOADS=self.root, COVERS=self.root / "covers",
+                                     SUPPORT=self.root / "support", HISTORY=self.root / "support/history.json")
         self.config.start()
         self.previous_keyring = keyring.get_keyring()
         self.keyring = MemoryKeyring()
@@ -126,7 +127,14 @@ class WorkerTests(unittest.TestCase):
                                      {"name": "aax_44_64", "enhanced_codec": "LC_64"}]}
         entry = worker.library_entry(book)
         self.assertEqual(entry, {"asin": "B000000001", "title": "Sourcery: Discworld 5", "codec": "LC_128",
-                                 "cover": None, "authors": "Terry Pratchett", "minutes": 400})
+                                 "cover": None, "authors": "Terry Pratchett", "author": "Terry Pratchett",
+                                 "narrators": "", "series": "", "sequence": "", "purchased": "",
+                                 "minutes": 400, "kbps": 128, "bytes": 400 * 60 * 128 * 1000 // 8})
+        detailed = worker.library_entry({**book, "narrators": [{"name": "Nigel Planer"}],
+                                         "series": [{"title": "Discworld", "sequence": "5"}],
+                                         "purchase_date": "2025-03-04T10:00:00Z"})
+        self.assertEqual((detailed["narrators"], detailed["series"], detailed["sequence"], detailed["purchased"]),
+                         ("Nigel Planer", "Discworld", "5", "2025-03-04"))
         worker.COVERS.mkdir()
         (worker.COVERS / "B000000001.jpg").write_bytes(b"jpeg")
         self.assertEqual(worker.library_entry(book)["cover"], str(worker.COVERS / "B000000001.jpg"))
@@ -311,6 +319,55 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), original)
         self.assertEqual(list(self.root.glob(".earshelf-*")), [])
         self.assertEqual(json.loads(events.getvalue().splitlines()[-1])["kind"], "done")
+
+    def test_m4b_keeps_chapters_in_one_lossless_file_with_layout_and_history(self):
+        source = self.make_book()
+        worker.save_bytes("1234abcd")
+        target = self.root / "Audiobooks"
+        opts = worker.options(json.dumps({"format": "m4b", "layout": "author", "output_dir": str(target)}))
+        meta = {"asin": "B000000001", "author": "Terry Pratchett", "series": "Discworld", "sequence": "13.0"}
+        events = io.StringIO()
+        with contextlib.redirect_stdout(events):
+            worker.convert(str(source), opts, meta)
+        output = target / "Terry Pratchett" / "Discworld" / "Book 13 - Demo_ Book.m4b"
+        data = json.loads(subprocess.check_output([
+            worker.tool("ffprobe"), "-v", "error", "-show_format", "-show_streams", "-show_chapters",
+            "-of", "json", str(output)]))
+        self.assertEqual(len(data["chapters"]), 2)
+        self.assertEqual(data["format"]["tags"]["title"], "Demo: Book")
+        self.assertIn("aac", [s["codec_name"] for s in data["streams"]])
+        self.assertTrue(source.exists())
+        self.assertEqual(list(target.glob(".earshelf-*")), [])
+        done = json.loads(events.getvalue().splitlines()[-1])
+        self.assertEqual((done["kind"], done["output"], done["source"]), ("done", str(output), str(source.resolve())))
+        self.assertEqual(worker.read_history(), {"B000000001": str(output)})
+        with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
+            worker.convert(str(source), opts, meta)
+
+    def test_options_and_destinations(self):
+        self.assertEqual(worker.options()["format"], "chapters")
+        for bad in ('{"format": "mp3"}', '{"layout": "../x"}', '{"output_dir": ""}', "[]"):
+            with self.assertRaises(ValueError):
+                worker.options(bad)
+        root = pathlib.Path("/lib")
+        self.assertEqual(worker.destination_for(root, "flat", "T", "A", "S", "1", ".m4b"), root / "T.m4b")
+        self.assertEqual(worker.destination_for(root, "author", "T", "A", "", "", ""), root / "A" / "T")
+        self.assertEqual(worker.destination_for(root, "author", "T", "A", "S", "2.5", ""), root / "A" / "S" / "Book 2.5 - T")
+        self.assertEqual(worker.destination_for(root, "author", "T", "../..", "S", "nan", "").parent, root / "_" / "S")
+
+    def test_library_remembers_converted_and_downloaded_books(self):
+        entry = {"asin": "B000000001", "title": "Demo: Book"}
+        self.assertEqual((worker.annotate(entry)["output"], worker.annotate(entry)["source"]), (None, None))
+        (self.root / "Demo_ Book.aax").write_bytes(b"x")
+        (self.root / "Demo_ Book").mkdir()
+        found = worker.annotate(entry)
+        self.assertEqual((found["output"], found["source"]), (str(self.root / "Demo_ Book"), str(self.root / "Demo_ Book.aax")))
+        moved = self.root / "Elsewhere.m4b"
+        moved.write_bytes(b"x")
+        worker.record("B000000001", moved)
+        self.assertEqual(worker.annotate(entry)["output"], str(moved))
+        moved.unlink()
+        self.assertEqual(worker.annotate(entry)["output"], str(self.root / "Demo_ Book"))
 
     def test_bundled_minimal_ffmpeg_converts(self):
         bundled = pathlib.Path(__file__).parents[1] / "target/ffmpeg-9.0.2-universal/bin"
