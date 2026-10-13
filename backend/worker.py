@@ -17,8 +17,9 @@ import urllib.parse
 CONFIG = pathlib.Path.home() / ".audible"
 BYTES_FILE = CONFIG / "activation_bytes"
 DOWNLOADS = pathlib.Path.home() / "Downloads"
-COVERS = pathlib.Path.home() / "Library/Caches/audible-unlock/covers"
-KEYCHAIN = ("audible-unlock", "audible-device")
+COVERS = pathlib.Path.home() / "Library/Caches/earshelf/covers"
+KEYCHAIN = ("earshelf", "audible-device")
+LEGACY_KEYCHAIN = ("audible-unlock", "audible-device")
 LIBRARY_GROUPS = "contributors,customer_rights,media,product_attrs"
 DOWNLOAD_AGENT = "Audible/671 CFNetwork/1240.0.4 Darwin/20.6.0"
 CANCEL = threading.Event()
@@ -87,11 +88,21 @@ def save_auth(auth):
     keyring.set_password(*KEYCHAIN, json.dumps(auth.to_dict()))
 
 
-def load_auth():
-    import audible
+def stored_auth():
     import keyring
 
     raw = keyring.get_password(*KEYCHAIN)
+    legacy = None if raw else keyring.get_password(*LEGACY_KEYCHAIN)
+    if legacy:
+        keyring.set_password(*KEYCHAIN, legacy)
+        forget_auth(LEGACY_KEYCHAIN)
+    return raw or legacy
+
+
+def load_auth():
+    import audible
+
+    raw = stored_auth()
     if not raw:
         raise ValueError("Log out and log in with Amazon again to browse your library. "
                          "Pasted activation bytes cannot download books.")
@@ -99,22 +110,22 @@ def load_auth():
 
 
 def has_auth():
-    import keyring
-
     try:
-        return bool(keyring.get_password(*KEYCHAIN))
+        return bool(stored_auth())
     except Exception:
         return False
 
 
-def forget_auth():
+def forget_auth(entry=KEYCHAIN):
     import keyring
     import keyring.errors
 
     try:
-        keyring.delete_password(*KEYCHAIN)
+        keyring.delete_password(*entry)
     except keyring.errors.PasswordDeleteError:
         pass
+    if entry == KEYCHAIN:
+        forget_auth(LEGACY_KEYCHAIN)
 
 
 def tool(name):
@@ -220,7 +231,7 @@ def convert(value):
     if destination.exists() or destination.is_symlink():
         raise ValueError("The output folder already exists. Nothing was overwritten.")
     emit("book", title=title, total=len(chapters))
-    with tempfile.TemporaryDirectory(prefix=".audible-unlock-", dir=path.parent) as temp:
+    with tempfile.TemporaryDirectory(prefix=".earshelf-", dir=path.parent) as temp:
         stage = pathlib.Path(temp) / "book"
         stage.mkdir()
         cover = pathlib.Path(temp) / "cover.jpg"
@@ -455,7 +466,7 @@ def aaxc_license(client, auth, asin):
 def download(url, target):
     import httpx
 
-    with tempfile.TemporaryDirectory(prefix=".audible-unlock-", dir=target.parent) as temp:
+    with tempfile.TemporaryDirectory(prefix=".earshelf-", dir=target.parent) as temp:
         part = pathlib.Path(temp) / target.name
         received, shown = 0, -1
         with httpx.stream("GET", url, headers={"User-Agent": DOWNLOAD_AGENT},

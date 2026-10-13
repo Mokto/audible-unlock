@@ -12,12 +12,12 @@ pub fn helper_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(directory) = exe.parent()
     {
-        let bundled = directory.join("audible-login");
+        let bundled = directory.join("earshelf-login");
         if bundled.is_file() {
             return bundled;
         }
     }
-    PathBuf::from(env!("AUDIBLE_LOGIN_HELPER"))
+    PathBuf::from(env!("EARSHELF_LOGIN_HELPER"))
 }
 
 pub struct LoginBrowser {

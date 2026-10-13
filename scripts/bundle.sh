@@ -11,12 +11,12 @@ esac
 bash scripts/build-ffmpeg.sh
 FFMPEG=target/ffmpeg-9.0.2
 
-APP="dist/Audible Unlock.app"
+APP="dist/Earshelf.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/backend/backend"
-HELPER="$("target/$PROFILE/audible-unlock" --print-login-helper)"
-cp "target/$PROFILE/audible-unlock" "$APP/Contents/MacOS/"
-cp "$HELPER" "$APP/Contents/MacOS/audible-login"
+HELPER="$("target/$PROFILE/earshelf" --print-login-helper)"
+cp "target/$PROFILE/earshelf" "$APP/Contents/MacOS/"
+cp "$HELPER" "$APP/Contents/MacOS/earshelf-login"
 cp pyproject.toml uv.lock "$APP/Contents/Resources/backend/"
 cp backend/worker.py "$APP/Contents/Resources/backend/backend/"
 cp resources/Info.plist "$APP/Contents/"
@@ -24,6 +24,6 @@ cp resources/AppIcon.icns "$APP/Contents/Resources/"
 cp "$FFMPEG/bin/ffmpeg" "$FFMPEG/bin/ffprobe" "$APP/Contents/MacOS/"
 mkdir -p "$APP/Contents/Resources/ffmpeg"
 cp "$FFMPEG/LICENSE.txt" "$FFMPEG/README.txt" "$APP/Contents/Resources/ffmpeg/"
-for tool in audible-login ffmpeg ffprobe; do codesign --force --sign - "$APP/Contents/MacOS/$tool"; done
+for tool in earshelf-login ffmpeg ffprobe; do codesign --force --sign - "$APP/Contents/MacOS/$tool"; done
 codesign --force --sign - "$APP"
 echo "Built $PWD/$APP"

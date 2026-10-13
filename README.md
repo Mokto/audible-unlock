@@ -1,4 +1,4 @@
-# Audible Unlock
+# Earshelf
 
 A personal macOS GPUI app for downloading your own Audible books and converting AAX/AAXC files into lossless, chapter-separated M4A files.
 
@@ -11,11 +11,11 @@ A personal macOS GPUI app for downloading your own Audible books and converting 
 Requires macOS 12+ on Apple Silicon and uv (`brew install uv`). FFmpeg is included; the 1Password CLI is optional.
 
 ```sh
-curl -fsSL https://github.com/Mokto/audible-unlock/releases/latest/download/Audible-Unlock-macos-arm64.zip -o /tmp/audible-unlock.zip
-ditto -x -k /tmp/audible-unlock.zip /Applications && rm /tmp/audible-unlock.zip
+curl -fsSL https://github.com/Mokto/earshelf/releases/latest/download/Earshelf-macos-universal.zip -o /tmp/earshelf.zip
+ditto -x -k /tmp/earshelf.zip /Applications && rm /tmp/earshelf.zip
 ```
 
-The app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). Files downloaded with `curl` are not quarantined, so it opens normally. If you download the zip from [Releases](https://github.com/Mokto/audible-unlock/releases) with a browser instead, macOS blocks the first launch: open the app once, then use **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Audible Unlock.app"`.
+The app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). Files downloaded with `curl` are not quarantined, so it opens normally. If you download the zip from [Releases](https://github.com/Mokto/earshelf/releases) with a browser instead, macOS blocks the first launch: open the app once, then use **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Earshelf.app"`.
 
 ## Run from source
 
@@ -32,10 +32,10 @@ From Finder:
 
 ```sh
 bash scripts/bundle.sh
-open "dist/Audible Unlock.app"
+open "dist/Earshelf.app"
 ```
 
-Use `bash scripts/bundle.sh release` for an optimized build. The bundle includes a native Swift/WebKit login helper, the Python helper and its dependency lockfile, and a minimal static FFmpeg/ffprobe, but still requires installed uv. `scripts/build-ffmpeg.sh` builds FFmpeg 9.0.2 from the checksum-pinned upstream tarball (about a minute, cached in `target/`) with only the components conversion needs, LGPL-only; its license and source reference ship in `Contents/Resources/ffmpeg`. Homebrew FFmpeg is still used by `cargo run` and the tests. Cargo compiles the native helper with the macOS Command Line Tools. On first launch uv prepares a Python environment in `~/Library/Caches/audible-unlock/python`; this can require internet access. The bundle is ad-hoc signed, not developer-signed or notarized. It is a personal app, not a standalone distribution.
+Use `bash scripts/bundle.sh release` for an optimized build. The bundle includes a native Swift/WebKit login helper, the Python helper and its dependency lockfile, and a minimal static FFmpeg/ffprobe, but still requires installed uv. `scripts/build-ffmpeg.sh` builds FFmpeg 9.0.2 from the checksum-pinned upstream tarball (about a minute, cached in `target/`) with only the components conversion needs, LGPL-only; its license and source reference ship in `Contents/Resources/ffmpeg`. Homebrew FFmpeg is still used by `cargo run` and the tests. Cargo compiles the native helper with the macOS Command Line Tools. On first launch uv prepares a Python environment in `~/Library/Caches/earshelf/python`; this can require internet access. The bundle is ad-hoc signed, not developer-signed or notarized. It is a personal app, not a standalone distribution.
 
 GPUI is pinned to 0.2.2. The `font-kit` feature enables native macOS text rendering; disabling it silently selects a no-op text renderer. Metal shaders compile at runtime, so the full Xcode app is not required.
 
@@ -89,7 +89,7 @@ Click **Audible library** to list the downloadable single-part books in your lib
 
 - AAX is requested first and decrypts with your activation bytes. Titles without AAX fall back to AAXC; its per-book key and IV are saved next to it as a mode-0600 `.voucher` file.
 - Downloads stream into a hidden staging directory and publish with an exclusive rename. Incomplete or cancelled downloads are discarded; existing files are never overwritten. An existing download with the same name is reused.
-- Cover artwork shows in library and queue rows. Covers download in the background after the list appears and are cached in `~/Library/Caches/audible-unlock/covers`; only HTTPS image responses up to 4 MB are kept.
+- Cover artwork shows in library and queue rows. Covers download in the background after the list appears and are cached in `~/Library/Caches/earshelf/covers`; only HTTPS image responses up to 4 MB are kept.
 - Multi-part books, podcasts, and titles without offline rights are not listed.
 - Accounts connected by pasting activation bytes cannot browse the library; log out and log in with Amazon.
 
@@ -105,7 +105,7 @@ Add or drag in AAX/AAXC files, or download from the library, then click **Conver
 - Existing output folders are never replaced, even if empty.
 - The original AAX files are never changed or deleted.
 - A failed book stops the queue. Use **Queue again**, then **Convert queue**.
-- Cancellation stops FFmpeg and removes normal staging output. A forced quit or power loss can leave a hidden `.audible-unlock-*` temporary directory next to the source; it is not treated as completed output.
+- Cancellation stops FFmpeg and removes normal staging output. A forced quit or power loss can leave a hidden `.earshelf-*` temporary directory next to the source; it is not treated as completed output.
 
 M4A only. No player, library sync, or MP3. Manually added AAXC files need the matching `.voucher` next to them.
 

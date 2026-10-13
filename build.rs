@@ -3,7 +3,7 @@ use std::{env, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=native/Login.swift");
     println!("cargo:rerun-if-changed=native/OnePassword.swift");
-    let helper = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("audible-login");
+    let helper = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("earshelf-login");
     let status = Command::new("xcrun")
         .args([
             "swiftc",
@@ -22,5 +22,5 @@ fn main() {
         status.success(),
         "Unable to compile the native WebKit login helper"
     );
-    println!("cargo:rustc-env=AUDIBLE_LOGIN_HELPER={}", helper.display());
+    println!("cargo:rustc-env=EARSHELF_LOGIN_HELPER={}", helper.display());
 }

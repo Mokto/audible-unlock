@@ -21,7 +21,7 @@ use std::{
 };
 
 actions!(
-    unlock,
+    earshelf,
     [AddFiles, Connect, Logout, PasteBytes, Convert, Cancel, Quit]
 );
 
@@ -85,7 +85,7 @@ fn start_worker(args: Vec<String>, events: mpsc::Sender<Value>) -> Worker {
             .env(
                 "UV_PROJECT_ENVIRONMENT",
                 PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                    .join("Library/Caches/audible-unlock/python"),
+                    .join("Library/Caches/earshelf/python"),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -283,7 +283,7 @@ fn library_books(value: &Value) -> Vec<LibraryBook> {
         .collect()
 }
 
-struct Unlock {
+struct Earshelf {
     focus: FocusHandle,
     books: Vec<Book>,
     library: Option<Vec<LibraryBook>>,
@@ -306,7 +306,7 @@ struct Unlock {
     operation_failed: bool,
 }
 
-impl Unlock {
+impl Earshelf {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (sender, events) = mpsc::channel();
         let focus = cx.focus_handle();
@@ -836,7 +836,7 @@ fn button(
         .child(label.into())
 }
 
-impl Render for Unlock {
+impl Render for Earshelf {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.worker.is_some();
         let signing_in = self.operation.is_some_and(Operation::is_login);
@@ -874,10 +874,10 @@ impl Render for Unlock {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.add_paths(paths.paths(), cx)))
             .child(div().flex_shrink_0().flex().justify_between().items_center()
                 .child(div().flex().flex_col().gap_1()
-                    .child(div().text_2xl().font_weight(gpui::FontWeight::BOLD).child("Audible Unlock"))
+                    .child(div().text_2xl().font_weight(gpui::FontWeight::BOLD).child("Earshelf"))
                     .child(div().text_sm().text_color(rgb(0x94a3b8)).child(
                         if self.connected { "One lossless M4A per chapter. Your originals stay untouched." }
-                        else { "Log in once to unlock your Audible audiobooks." })))
+                        else { "Log in once to keep your Audible audiobooks as chapter files you own." })))
                 .when(self.connected, |element| element.child(div().flex().items_center().gap_3()
                     .child(div().text_sm().text_color(rgb(0x8ae0b1)).child("Logged in"))
                     .child(button("logout", if self.operation == Some(Operation::LoggingOut) { "Logging out…" } else { "Logout" }, !busy)
@@ -1062,13 +1062,13 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![
             gpui::Menu {
-                name: "Audible Unlock".into(),
+                name: "Earshelf".into(),
                 items: vec![
                     gpui::MenuItem::action("Log in to Audible", Connect),
                     gpui::MenuItem::action("Logout", Logout),
                     gpui::MenuItem::action("Paste activation bytes", PasteBytes),
                     gpui::MenuItem::separator(),
-                    gpui::MenuItem::action("Quit Audible Unlock", Quit),
+                    gpui::MenuItem::action("Quit Earshelf", Quit),
                 ],
             },
             gpui::Menu {
@@ -1094,16 +1094,16 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Audible Unlock".into()),
+                    title: Some("Earshelf".into()),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(760.), px(620.))),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Unlock::new(window, cx)),
+            |window, cx| cx.new(|cx| Earshelf::new(window, cx)),
         )
-        .expect("Unable to open the Audible Unlock window");
+        .expect("Unable to open the Earshelf window");
         cx.activate(true);
     });
 }

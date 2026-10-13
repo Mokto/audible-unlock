@@ -52,59 +52,59 @@ context.setStrokeColor(color(0xa6d1e3, alpha: 0.15))
 context.setLineWidth(2)
 context.strokePath()
 
-let shackle = CGMutablePath()
-shackle.move(to: CGPoint(x: 360, y: 444))
-shackle.addLine(to: CGPoint(x: 360, y: 347))
-shackle.addCurve(to: CGPoint(x: 658, y: 318), control1: CGPoint(x: 360, y: 166), control2: CGPoint(x: 658, y: 166))
-let shackleOutline = shackle.copy(strokingWithWidth: 58, lineCap: .round, lineJoin: .round, miterLimit: 10)
+let shelf = CGPath(roundedRect: CGRect(x: 232, y: 688, width: 560, height: 34),
+                   cornerWidth: 17, cornerHeight: 17, transform: nil)
 context.saveGState()
-context.setShadow(offset: CGSize(width: 0, height: -8), blur: 14, color: color(0x030a16, alpha: 0.35))
-context.addPath(shackleOutline)
+context.setShadow(offset: CGSize(width: 0, height: -12), blur: 22, color: color(0x030915, alpha: 0.45))
+context.addPath(shelf)
 context.setFillColor(color(0xe7a44b))
 context.fillPath()
 context.restoreGState()
-gradient(shackleOutline, colors: [color(0xffe2a0), color(0xf6bd66), color(0xed8e45)],
-         from: CGPoint(x: 360, y: 220), to: CGPoint(x: 658, y: 449))
+gradient(shelf, colors: [color(0xffe2a0), color(0xf6bd66), color(0xed8e45)],
+         from: CGPoint(x: 232, y: 688), to: CGPoint(x: 792, y: 722))
 
-let book = CGMutablePath()
-book.move(to: CGPoint(x: 272, y: 451))
-book.addCurve(to: CGPoint(x: 512, y: 487), control1: CGPoint(x: 356, y: 411), control2: CGPoint(x: 442, y: 443))
-book.addCurve(to: CGPoint(x: 752, y: 451), control1: CGPoint(x: 582, y: 443), control2: CGPoint(x: 668, y: 411))
-book.addLine(to: CGPoint(x: 752, y: 702))
-book.addCurve(to: CGPoint(x: 512, y: 751), control1: CGPoint(x: 668, y: 665), control2: CGPoint(x: 577, y: 703))
-book.addCurve(to: CGPoint(x: 272, y: 702), control1: CGPoint(x: 447, y: 703), control2: CGPoint(x: 356, y: 665))
-book.closeSubpath()
-context.saveGState()
-context.setShadow(offset: CGSize(width: 0, height: -16), blur: 25, color: color(0x030915, alpha: 0.4))
-context.addPath(book)
-context.setFillColor(color(0xe8edf2))
-context.fillPath()
-context.restoreGState()
-gradient(book, colors: [color(0xffffff), color(0xf5f1e8), color(0xcbd7df)],
-         from: CGPoint(x: 440, y: 444), to: CGPoint(x: 540, y: 751))
-
-let binding = CGMutablePath()
-binding.move(to: CGPoint(x: 512, y: 493))
-binding.addLine(to: CGPoint(x: 512, y: 730))
-context.addPath(binding)
-context.setLineWidth(10)
-context.setLineCap(.round)
-context.setStrokeColor(color(0x597486, alpha: 0.25))
-context.strokePath()
-
-for (x, height) in [(336.0, 42.0), (370.0, 82.0), (404.0, 118.0), (438.0, 66.0)] {
-    let bar = CGPath(roundedRect: CGRect(x: x, y: 582 - height / 2, width: 18, height: height),
-                     cornerWidth: 9, cornerHeight: 9, transform: nil)
-    gradient(bar, colors: [color(0x365673), color(0x1d344c)],
-             from: CGPoint(x: x, y: 523), to: CGPoint(x: x, y: 641))
+let spines: [(height: CGFloat, top: UInt32, bottom: UInt32)] = [
+    (150, 0xf7f3ea, 0xd9e1e7), (214, 0xdbe7f0, 0xb7c9d6), (276, 0xf7f3ea, 0xd9e1e7),
+    (320, 0xf2d9a8, 0xdcb575), (276, 0xf7f3ea, 0xd9e1e7), (214, 0xdbe7f0, 0xb7c9d6), (150, 0xf7f3ea, 0xd9e1e7),
+]
+for (index, spine) in spines.enumerated() {
+    let x = 300 + CGFloat(index) * 62
+    let rect = CGRect(x: x, y: 682 - spine.height, width: 52, height: spine.height)
+    let path = CGPath(roundedRect: rect, cornerWidth: 10, cornerHeight: 10, transform: nil)
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -8), blur: 14, color: color(0x030915, alpha: 0.35))
+    context.addPath(path)
+    context.setFillColor(color(spine.top))
+    context.fillPath()
+    context.restoreGState()
+    gradient(path, colors: [color(spine.top), color(spine.bottom)],
+             from: CGPoint(x: x, y: rect.minY), to: CGPoint(x: x, y: rect.maxY))
+    for y in [rect.minY + 26, rect.maxY - 34] {
+        context.addPath(CGPath(roundedRect: CGRect(x: x + 10, y: y, width: 32, height: 8),
+                               cornerWidth: 4, cornerHeight: 4, transform: nil))
+        context.setFillColor(color(0x365673, alpha: 0.45))
+        context.fillPath()
+    }
 }
 
-for (y, width, alpha) in [(548.0, 134.0, 0.9), (588.0, 116.0, 0.7), (628.0, 87.0, 0.5)] {
-    let line = CGPath(roundedRect: CGRect(x: 567, y: y, width: width, height: 14),
-                      cornerWidth: 7, cornerHeight: 7, transform: nil)
-    context.addPath(line)
-    context.setFillColor(color(0x3c5870, alpha: alpha))
+let band = CGMutablePath()
+band.move(to: CGPoint(x: 238, y: 520))
+band.addCurve(to: CGPoint(x: 786, y: 520), control1: CGPoint(x: 238, y: 170), control2: CGPoint(x: 786, y: 170))
+let bandOutline = band.copy(strokingWithWidth: 44, lineCap: .round, lineJoin: .round, miterLimit: 10)
+var cups = [CGPath]()
+for x in [198.0, 746.0] {
+    cups.append(CGPath(roundedRect: CGRect(x: x, y: 470, width: 80, height: 150),
+                       cornerWidth: 34, cornerHeight: 34, transform: nil))
+}
+for path in [bandOutline] + cups {
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -8), blur: 14, color: color(0x030a16, alpha: 0.35))
+    context.addPath(path)
+    context.setFillColor(color(0xe7a44b))
     context.fillPath()
+    context.restoreGState()
+    gradient(path, colors: [color(0xffe2a0), color(0xf6bd66), color(0xed8e45)],
+             from: CGPoint(x: 238, y: 250), to: CGPoint(x: 786, y: 620))
 }
 
 let image = context.makeImage()!

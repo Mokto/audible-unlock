@@ -107,6 +107,14 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             worker.load_auth()
 
+    def test_legacy_audible_unlock_keychain_entry_migrates(self):
+        self.keyring.set_password(*worker.LEGACY_KEYCHAIN, '{"adp_token": "legacy"}')
+        self.assertTrue(worker.has_auth())
+        self.assertEqual(self.keyring.values, {worker.KEYCHAIN: '{"adp_token": "legacy"}'})
+        self.keyring.set_password(*worker.LEGACY_KEYCHAIN, "stale")
+        worker.forget_auth()
+        self.assertEqual(self.keyring.values, {})
+
     def test_library_lists_only_downloadable_single_books_with_best_aax_codec(self):
         book = {"asin": "B000000001", "title": "Sourcery", "subtitle": "Discworld 5",
                 "content_delivery_type": "SinglePartBook", "runtime_length_min": 400,
@@ -160,7 +168,7 @@ class WorkerTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(worker.Cancelled):
                 worker.download(url, self.root / "Other.aax")
             self.assertFalse((self.root / "Other.aax").exists())
-            self.assertEqual(list(self.root.glob(".audible-unlock-*")), [])
+            self.assertEqual(list(self.root.glob(".earshelf-*")), [])
         finally:
             server.shutdown()
             server.server_close()
@@ -301,7 +309,7 @@ class WorkerTests(unittest.TestCase):
             worker.convert(str(source))
         self.assertEqual([chapter.read_bytes() for chapter in chapters], saved)
         self.assertEqual(source.read_bytes(), original)
-        self.assertEqual(list(self.root.glob(".audible-unlock-*")), [])
+        self.assertEqual(list(self.root.glob(".earshelf-*")), [])
         self.assertEqual(json.loads(events.getvalue().splitlines()[-1])["kind"], "done")
 
     def test_bundled_minimal_ffmpeg_converts(self):
@@ -333,7 +341,7 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.convert(str(source))
         self.assertFalse((self.root / "Demo_ Book").exists())
-        self.assertEqual(list(self.root.glob(".audible-unlock-*")), [])
+        self.assertEqual(list(self.root.glob(".earshelf-*")), [])
         self.assertTrue(source.exists())
 
     def test_external_login_generates_browser_url_without_network(self):
