@@ -1,31 +1,81 @@
 # Earshelf
 
-Keep the Audible audiobooks you own as lossless, chapter-separated M4A files. A native macOS app (Rust + GPUI) that downloads your library and converts AAX/AAXC books, one file per chapter, ready for any player.
+**Keep the Audible audiobooks you own, in the format you choose.** Earshelf is a free, native Mac app that signs in to your Audible account, shows your library, downloads your books and saves them as lossless, DRM-free **M4B** (one file with chapters) or **M4A** (one file per chapter). No re-encoding, so the quality is identical to what you bought.
 
-Earshelf is an independent project, not affiliated with or endorsed by Audible or Amazon.
+![Earshelf library with covers, author, narrator, series, length and size](docs/screenshots/library.png)
 
-![Audible library with cover artwork and Download & convert buttons](docs/screenshots/library.png)
-
-**For audiobooks you own only.** Use it to keep personal, DRM-free copies of books you bought on your own Audible account. Do not use it to share or distribute audiobooks. You are responsible for following your local laws and Audible's terms.
+**For audiobooks you own only.** Use it to keep personal copies of books you bought on your own Audible account. Do not share or distribute them. You are responsible for following your local laws and Audible's terms. Earshelf is an independent project, not affiliated with or endorsed by Audible or Amazon.
 
 ## Install
 
-Requires macOS 12+ on Apple Silicon or Intel. Nothing else to install: FFmpeg and uv are bundled. The first launch downloads Python and two libraries (about 30 MB, once). The 1Password CLI is optional.
+**You need:** a Mac running macOS 12 or newer (Apple Silicon or Intel), an internet connection, and an Audible account. Nothing else: FFmpeg and Python tooling are included. Allow about 100 MB of disk space.
 
-```sh
-curl -fsSL https://github.com/Mokto/earshelf/releases/latest/download/Earshelf-macos-universal.zip -o /tmp/earshelf.zip
-ditto -x -k /tmp/earshelf.zip /Applications && rm /tmp/earshelf.zip
-```
+### 1. Install with one command
 
-The app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). Files downloaded with `curl` are not quarantined, so it opens normally. If you download the zip from [Releases](https://github.com/Mokto/earshelf/releases) with a browser instead, macOS blocks the first launch: open the app once, then use **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Earshelf.app"`.
+1. Open **Terminal**: press **⌘ Space**, type `Terminal`, press **Return**.
+2. Paste this whole block and press **Return**:
 
-Releases are built by [GitHub Actions](.github/workflows/ci.yml) from the tagged commit, with a signed build-provenance attestation. Verify a download with:
+   ```sh
+   curl -fsSL https://github.com/Mokto/earshelf/releases/latest/download/Earshelf-macos-universal.zip -o /tmp/earshelf.zip
+   ditto -x -k /tmp/earshelf.zip /Applications && rm /tmp/earshelf.zip
+   ```
 
-```sh
-gh attestation verify Earshelf-macos-universal.zip -R Mokto/earshelf
-```
+3. Open **Earshelf** from your Applications folder (or press **⌘ Space** and type `Earshelf`).
 
-If you used Audible Unlock (v0.1.x), the saved Amazon sign-in carries over. Delete the old app; reselect your 1Password login once.
+That's it. The first launch takes up to a minute, because Earshelf downloads Python and two small libraries once (about 30 MB, internet required). Later launches are instant.
+
+> **Why Terminal and not a normal download?** Earshelf is free and open source, and its builds are not "notarized", which would require a paid Apple Developer account (US$99 a year). macOS blocks un-notarized apps you download in a browser. Files fetched with the command above are not blocked, so the app simply opens. Prefer a browser download? See below.
+
+<details>
+<summary><b>Download in a browser instead</b></summary>
+
+1. Download `Earshelf-macos-universal.zip` from the [latest release](https://github.com/Mokto/earshelf/releases/latest) and double-click it to unzip.
+2. Drag **Earshelf** into your **Applications** folder.
+3. Double-click Earshelf. macOS says it "cannot be opened" or "could not verify" it. Click **Done** (or **OK**).
+4. Open **System Settings → Privacy & Security**, scroll down to the message about Earshelf and click **Open Anyway**. Enter your password if asked, then click **Open**. You only do this once.
+   - On macOS 12 to 14 you can instead **right-click Earshelf → Open → Open**.
+   - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Earshelf.app`
+
+</details>
+
+### 2. Sign in (once)
+
+![The Earshelf sign-in screen](docs/screenshots/sign-in.png)
+
+1. Pick the **marketplace** where your Audible library lives (UK, US, DE, AU, CA or FR). If unsure, choose the country of your Amazon account.
+2. Click **Log in with Amazon**. A sign-in window opens with Amazon's own page. Sign in there, including any code or CAPTCHA Amazon asks for. Earshelf never sees or saves your password.
+3. The window closes by itself and your **Library** appears.
+
+Using 1Password? The sign-in window has a **Fill with 1Password** button (optional; needs the 1Password app and its command-line tool, see [1Password autofill](#1password-cli-autofill)).
+
+### 3. Get your books
+
+1. In the **Library**, click **Download & convert** next to a book, or tick several and click **Download N** (or **Download all new**).
+2. Watch progress in the sidebar or the **Queue**. A big book takes a few minutes to download and under a minute to convert.
+3. When a row shows **✓ Converted**, click **Show in Finder**. Your files are in your **Downloads** folder (change this in **Settings**).
+
+Already have `.aax` files from Audible? Drag them onto the window. They are converted the same way.
+
+In **Settings** you can choose **Single M4B** (one file with chapters: Apple Books, Plex, Audiobookshelf and most players) or **Chapter files** (one M4A per chapter), a different output folder, an `Author/Series/Book` folder layout, light or dark theme, and more. See [Settings](#settings).
+
+### Update, uninstall, verify
+
+- **Update:** Earshelf shows a banner when a new version exists. To update, quit Earshelf and run the install command above again. Your sign-in and settings are kept.
+- **Uninstall:** click **Log out** in Earshelf first (it asks Amazon to remove this Mac from your Audible devices), quit the app, then delete `/Applications/Earshelf.app`. Optional leftovers: `~/Library/Caches/earshelf`, `~/Library/Application Support/Earshelf`, and `~/.audible`. Your books are never touched.
+- **Verify a download:** every release is built by [GitHub Actions](.github/workflows/ci.yml) from the tagged commit, with a build-provenance attestation. Check it with `gh attestation verify Earshelf-macos-universal.zip -R Mokto/earshelf`.
+- **Coming from Audible Unlock (v0.1.x)?** Delete the old app. Your saved Amazon sign-in carries over; pick your 1Password login once more.
+
+### Something wrong?
+
+| What you see | What to do |
+|---|---|
+| macOS says Earshelf "cannot be opened" | Use **Open Anyway** as described in the browser instructions above, or reinstall with the Terminal command. |
+| "Checking local tools…" for a long time on first launch | It is downloading Python. Wait a minute and check your internet connection. |
+| The sign-in window is blank or shows an error | Check your connection, then click **Retry sign-in** in that window. |
+| "Log out, then log in with Amazon again to browse your library" | You signed in with pasted activation bytes, which can't browse the library. Log out and sign in with Amazon. |
+| A book fails | The reason is shown on its row. Click **Retry**, or **Copy diagnostics** and [open an issue](https://github.com/Mokto/earshelf/issues/new?template=bug_report.yml). |
+
+Questions or bugs? Open an [issue](https://github.com/Mokto/earshelf/issues). Testing on a marketplace other than the UK? Please add your result to the [beta testers issue](https://github.com/Mokto/earshelf/issues/2).
 
 ## Run from source
 
