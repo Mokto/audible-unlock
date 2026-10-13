@@ -10,7 +10,7 @@ const SIDEBAR: f32 = 208.;
 const LIST_ROW: f32 = 96.;
 const CARD_WIDTH: f32 = 168.;
 const GRID_GAP: f32 = 12.;
-const GRID_ROW: f32 = 310.;
+const GRID_ROW: f32 = 336.;
 const WHITE: u32 = 0xffffff;
 
 pub enum Primary {
@@ -494,9 +494,17 @@ impl Earshelf {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().truncate().child(book.title.clone()))
                             .child(
                                 div()
+                                    .flex_shrink_0()
+                                    .h(px(22.))
+                                    .truncate()
+                                    .child(book.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .h(px(20.))
                                     .truncate()
                                     .text_sm()
                                     .text_color(rgb(t.muted))
@@ -504,6 +512,8 @@ impl Earshelf {
                             )
                             .child(
                                 div()
+                                    .flex_shrink_0()
+                                    .h(px(16.))
                                     .truncate()
                                     .text_xs()
                                     .text_color(rgb(status_color))
@@ -573,9 +583,18 @@ impl Earshelf {
                     }),
             )
             .child(cover(book.cover.clone(), CARD_WIDTH - 18., t))
-            .child(div().truncate().text_sm().child(book.title.clone()))
             .child(
                 div()
+                    .flex_shrink_0()
+                    .h(px(20.))
+                    .truncate()
+                    .text_sm()
+                    .child(book.title.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .h(px(16.))
                     .truncate()
                     .text_xs()
                     .text_color(rgb(t.muted))
@@ -583,6 +602,8 @@ impl Earshelf {
             )
             .child(
                 div()
+                    .flex_shrink_0()
+                    .h(px(16.))
                     .truncate()
                     .text_xs()
                     .text_color(rgb(if info.error { t.error } else { t.muted }))
