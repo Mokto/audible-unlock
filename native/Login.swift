@@ -294,10 +294,29 @@ func selfTest() {
     print("WebKit redirect validation and ephemeral storage checks passed.")
 }
 
+/// Moves only downloaded audiobook files (and their voucher) to the Trash so Finder's "Put Back" works.
+func trashDownloads(_ paths: [String]) -> Int32 {
+    var status: Int32 = 0
+    for path in paths {
+        let url = URL(fileURLWithPath: path)
+        var isDirectory: ObjCBool = false
+        guard ["aax", "aaxc", "voucher"].contains(url.pathExtension.lowercased()),
+              FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
+              (try? FileManager.default.trashItem(at: url, resultingItemURL: nil)) != nil else {
+            status = 1
+            continue
+        }
+    }
+    return status
+}
+
 @main
 enum AudibleLoginMain {
 static func main() {
-if CommandLine.arguments.contains("--check-password-cli") {
+let arguments = CommandLine.arguments
+if arguments.count > 2, arguments[1] == "--trash" {
+    exit(trashDownloads(Array(arguments.dropFirst(2))))
+} else if CommandLine.arguments.contains("--check-password-cli") {
     do {
         guard let accounts = try PasswordSession().run(["account", "list", "--format=json"], timeout: 10) as? [[String: Any]],
               accounts.contains(where: { ($0["account_uuid"] as? String)?.range(of: "^[A-Za-z0-9]{26}$", options: .regularExpression) != nil }) else { throw PasswordError.invalid }

@@ -1,12 +1,18 @@
 mod login_browser;
+mod settings;
+mod theme;
+mod views;
 
 use gpui::{
-    App, Application, Bounds, Context, Div, ElementId, ExternalPaths, FocusHandle, KeyBinding,
-    PathPromptOptions, SharedString, Stateful, StyledImage, Window, WindowBounds, WindowOptions,
-    actions, div, img, prelude::*, px, rgb, size,
+    App, AppContext, Application, Bounds, ClipboardItem, Context, ExternalPaths, FocusHandle,
+    KeyBinding, KeyDownEvent, PathPromptOptions, Pixels, Point, PromptLevel, ScrollStrategy,
+    UniformListScrollHandle, Window, WindowAppearance, WindowBounds, WindowOptions, actions, px,
+    size,
 };
 use serde_json::{Value, json};
+use settings::{Appearance, Format, Settings, Sort};
 use std::{
+    collections::HashSet,
     io::{BufRead, BufReader, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -19,10 +25,24 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use theme::Theme;
 
 actions!(
     earshelf,
-    [AddFiles, Connect, Logout, PasteBytes, Convert, Cancel, Quit]
+    [
+        AddFiles,
+        Connect,
+        Logout,
+        PasteBytes,
+        Convert,
+        Cancel,
+        Quit,
+        ShowLibrary,
+        ShowQueue,
+        ShowSettings,
+        FocusSearch,
+        SelectAll
+    ]
 );
 
 struct Worker {
@@ -208,6 +228,13 @@ fn conversion_blocker(
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Section {
+    Library,
+    Queue,
+    Settings,
+}
+
 #[derive(PartialEq)]
 enum State {
     Queued,
@@ -227,71 +254,100 @@ struct Book {
     output: Option<PathBuf>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LibraryBook {
     asin: String,
     title: String,
-    detail: String,
+    authors: String,
+    narrators: String,
+    series: String,
+    sequence: String,
+    purchased: String,
+    minutes: u64,
+    kbps: Option<u64>,
+    bytes: Option<u64>,
     cover: Option<PathBuf>,
+    output: Option<PathBuf>,
+    source: Option<PathBuf>,
 }
 
-fn cover(path: Option<PathBuf>) -> gpui::AnyElement {
-    let size = px(56.);
-    match path {
-        Some(path) => img(path)
-            .size(size)
-            .flex_shrink_0()
-            .rounded_md()
-            .object_fit(gpui::ObjectFit::Cover)
-            .with_fallback(move || {
-                div()
-                    .size(size)
-                    .rounded_md()
-                    .bg(rgb(0x253148))
-                    .into_any_element()
-            })
-            .into_any_element(),
-        None => div()
-            .size(size)
-            .flex_shrink_0()
-            .rounded_md()
-            .bg(rgb(0x253148))
-            .into_any_element(),
+impl LibraryBook {
+    fn length(&self) -> String {
+        format!("{} h {:02} min", self.minutes / 60, self.minutes % 60)
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        [&self.title, &self.authors, &self.narrators, &self.series]
+            .iter()
+            .any(|field| field.to_lowercase().contains(query))
     }
 }
 
 fn library_books(value: &Value) -> Vec<LibraryBook> {
+    let text = |book: &Value, key: &str| book[key].as_str().unwrap_or_default().to_owned();
+    let path = |book: &Value, key: &str| book[key].as_str().map(PathBuf::from);
     value
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|book| {
-            let minutes = book["minutes"].as_u64().unwrap_or(0);
-            let authors = book["authors"].as_str().unwrap_or_default();
-            let length = format!("{} h {:02} min", minutes / 60, minutes % 60);
             Some(LibraryBook {
                 asin: book["asin"].as_str()?.into(),
                 title: book["title"].as_str()?.into(),
-                detail: if authors.is_empty() {
-                    length
-                } else {
-                    format!("{authors} · {length}")
-                },
-                cover: book["cover"].as_str().map(PathBuf::from),
+                authors: text(book, "authors"),
+                narrators: text(book, "narrators"),
+                series: text(book, "series"),
+                sequence: text(book, "sequence"),
+                purchased: text(book, "purchased"),
+                minutes: book["minutes"].as_u64().unwrap_or(0),
+                kbps: book["kbps"].as_u64(),
+                bytes: book["bytes"].as_u64(),
+                cover: path(book, "cover"),
+                output: path(book, "output"),
+                source: path(book, "source"),
             })
         })
         .collect()
 }
 
+#[derive(Clone)]
+enum MenuAction {
+    Reveal(PathBuf),
+    Download(String),
+    Retry(usize),
+    Remove(usize),
+    CopyTitle(String),
+}
+
+#[derive(Clone)]
+struct ContextMenu {
+    position: Point<Pixels>,
+    items: Vec<(&'static str, MenuAction)>,
+}
+
 struct Earshelf {
     focus: FocusHandle,
+    search_focus: FocusHandle,
+    settings: Settings,
+    section: Section,
     books: Vec<Book>,
     library: Option<Vec<LibraryBook>>,
     library_ready: bool,
-    show_library: bool,
+    library_requested: bool,
+    library_error: Option<String>,
+    query: String,
+    selected: HashSet<String>,
+    cursor: Option<usize>,
+    list_scroll: UniformListScrollHandle,
+    menu: Option<ContextMenu>,
+    update: Option<(String, String)>,
+    updates: mpsc::Receiver<(String, String)>,
+    confirming: bool,
+    advanced: bool,
+    os_version: String,
+    badge: String,
     connected: bool,
     dependencies: bool,
-    locale: String,
     message: String,
     login_url: Option<String>,
     browser: Option<login_browser::LoginBrowser>,
@@ -309,14 +365,26 @@ struct Earshelf {
 impl Earshelf {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (sender, events) = mpsc::channel();
+        let (found, updates) = mpsc::channel();
+        let settings = Settings::load();
+        if settings.check_updates {
+            settings::check_for_update(env!("CARGO_PKG_VERSION"), found);
+        }
         let focus = cx.focus_handle();
         focus.focus(window);
+        let this = cx.entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |this, cx| this.should_close(window, cx))
+        });
+        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+            .detach();
         cx.on_app_quit(|this, cx| {
             this.queue_running = false;
             this.browser = None;
             if let Some(worker) = &this.worker {
                 worker.cancel.store(true, Ordering::Relaxed);
             }
+            settings::set_dock_badge("");
             cx.background_executor().timer(Duration::from_millis(90))
         })
         .detach();
@@ -333,14 +401,32 @@ impl Earshelf {
         .detach();
         let worker = start_worker(vec!["status".into()], sender.clone());
         Self {
+            search_focus: cx.focus_handle(),
             focus,
+            settings,
+            section: Section::Library,
             books: vec![],
             library: None,
             library_ready: false,
-            show_library: false,
+            library_requested: false,
+            library_error: None,
+            query: String::new(),
+            selected: HashSet::new(),
+            cursor: None,
+            list_scroll: UniformListScrollHandle::new(),
+            menu: None,
+            update: None,
+            updates,
+            confirming: false,
+            advanced: false,
+            os_version: Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                .unwrap_or_default(),
+            badge: String::new(),
             connected: false,
             dependencies: false,
-            locale: "uk".into(),
             message: "Checking local tools…".into(),
             login_url: None,
             browser: None,
@@ -356,7 +442,75 @@ impl Earshelf {
         }
     }
 
+    fn theme(&self, window: &Window) -> Theme {
+        match self.settings.appearance {
+            Appearance::Light => Theme::LIGHT,
+            Appearance::Dark => Theme::DARK,
+            Appearance::System => match window.appearance() {
+                WindowAppearance::Light | WindowAppearance::VibrantLight => Theme::LIGHT,
+                _ => Theme::DARK,
+            },
+        }
+    }
+
+    fn save_settings(&self) {
+        self.settings.save();
+    }
+
+    fn working(&self) -> bool {
+        self.operation == Some(Operation::Converting)
+            || self.books.iter().any(|book| book.state == State::Running)
+    }
+
+    fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.working() {
+            return true;
+        }
+        self.confirm_quit(window, cx);
+        false
+    }
+
+    fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.working() {
+            cx.quit();
+            return;
+        }
+        if self.confirming {
+            return;
+        }
+        self.confirming = true;
+        let title = self
+            .active
+            .map(|index| self.books[index].title.clone())
+            .unwrap_or_default();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Stop {title} and quit Earshelf?"),
+            Some("A download or conversion is still running. Partial files are discarded; finished books and your original files are unchanged."),
+            &["Stop and quit", "Keep working"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let quit = answer.await == Ok(0);
+            let _ = this.update(cx, |this, cx| {
+                this.confirming = false;
+                if quit {
+                    cx.quit();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_quit(window, cx);
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
+        if let Ok(update) = self.updates.try_recv() {
+            self.update = Some(update);
+            cx.notify();
+        }
         let events: Vec<_> = self.events.try_iter().collect();
         if events.is_empty() {
             return;
@@ -381,7 +535,7 @@ impl Earshelf {
                         "FFmpeg is missing. Rebuild the app bundle or run: brew install ffmpeg"
                             .into()
                     } else if self.connected {
-                        "Ready. Add AAX files to get started.".into()
+                        "Ready.".into()
                     } else {
                         "Connect to Audible or paste your activation bytes.".into()
                     };
@@ -414,14 +568,20 @@ impl Earshelf {
                     self.connected = true;
                     self.library_ready = event["library"] == true;
                     self.login_url = None;
-                    self.message = "Logged in. Add AAX files to begin converting.".into();
+                    self.section = Section::Library;
+                    self.message = "Logged in.".into();
                 }
                 "logged_out" => {
                     self.connected = false;
                     self.books.clear();
                     self.library = None;
                     self.library_ready = false;
-                    self.show_library = false;
+                    self.library_requested = false;
+                    self.library_error = None;
+                    self.query.clear();
+                    self.selected.clear();
+                    self.cursor = None;
+                    self.menu = None;
                     self.browser = None;
                     self.login_url = None;
                     self.queue_running = false;
@@ -435,6 +595,7 @@ impl Earshelf {
                         if books.len() == 1 { "book" } else { "books" }
                     );
                     self.library = Some(books);
+                    self.library_error = None;
                 }
                 "cover" => {
                     if let Some(book) = self
@@ -477,7 +638,11 @@ impl Earshelf {
                 "book" => {
                     if let Some(index) = self.active {
                         self.books[index].title = text("title");
-                        self.books[index].detail = format!("0 / {} chapters", event["total"]);
+                        self.books[index].detail = if event["format"] == "m4b" {
+                            format!("Writing one M4B with {} chapters…", event["total"])
+                        } else {
+                            format!("0 / {} chapters", event["total"])
+                        };
                     }
                 }
                 "progress" => {
@@ -489,18 +654,7 @@ impl Earshelf {
                             format!("{completed} / {total} chapters · {}", text("chapter"));
                     }
                 }
-                "done" => {
-                    if let Some(index) = self.active {
-                        self.books[index].state = State::Done;
-                        self.books[index].progress = 1.0;
-                        self.books[index].output = Some(PathBuf::from(text("output")));
-                        self.books[index].detail = "Complete · lossless M4A".into();
-                        self.message = format!(
-                            "Finished {}. The original AAX is unchanged.",
-                            self.books[index].title
-                        );
-                    }
-                }
+                "done" => self.finish_book(&event, cx),
                 "warning" => {
                     self.message = text("message");
                     if self.operation == Some(Operation::LoginFinishing) {
@@ -510,10 +664,19 @@ impl Earshelf {
                 "error" => {
                     self.browser = None;
                     self.operation_failed = true;
-                    self.message = text("message");
                     if let Some(index) = self.active {
                         self.books[index].state = State::Failed;
-                        self.books[index].detail = self.message.clone();
+                        self.books[index].detail = text("message");
+                        if cx.active_window().is_none() {
+                            settings::notify(
+                                "Earshelf couldn't finish a book".into(),
+                                self.books[index].title.clone(),
+                            );
+                        }
+                    } else if self.operation == Some(Operation::LoadingLibrary) {
+                        self.library_error = Some(text("message"));
+                    } else {
+                        self.message = text("message");
                     }
                 }
                 "cancelled" => {
@@ -555,11 +718,75 @@ impl Earshelf {
                     if self.queue_running {
                         self.next();
                     }
+                    if self.worker.is_none()
+                        && self.connected
+                        && self.library_ready
+                        && !self.library_requested
+                    {
+                        self.load_library();
+                    }
                 }
                 _ => {}
             }
         }
+        let remaining = self
+            .books
+            .iter()
+            .filter(|book| matches!(book.state, State::Queued | State::Running))
+            .count();
+        let badge = if remaining == 0 {
+            String::new()
+        } else {
+            remaining.to_string()
+        };
+        if badge != self.badge {
+            settings::set_dock_badge(&badge);
+            self.badge = badge;
+        }
         cx.notify();
+    }
+
+    fn finish_book(&mut self, event: &Value, cx: &mut Context<Self>) {
+        let Some(index) = self.active else { return };
+        let output = PathBuf::from(event["output"].as_str().unwrap_or_default());
+        let source = PathBuf::from(event["source"].as_str().unwrap_or_default());
+        let single = event["format"] == "m4b";
+        let book = &mut self.books[index];
+        book.state = State::Done;
+        book.progress = 1.0;
+        book.output = Some(output.clone());
+        book.detail = if single {
+            "Complete · one lossless M4B".into()
+        } else {
+            "Complete · lossless M4A".into()
+        };
+        let mut trashed = false;
+        if self.settings.trash_source && source.is_file() {
+            settings::trash(vec![source.clone(), source.with_extension("voucher")]);
+            trashed = !source.exists();
+        }
+        let title = book.title.clone();
+        self.message = if trashed {
+            format!("Finished {title}. The original was moved to the Trash.")
+        } else {
+            format!("Finished {title}. The original is unchanged.")
+        };
+        if let Some(asin) = book.asin.clone()
+            && let Some(entry) = self.library.iter_mut().flatten().find(|b| b.asin == asin)
+        {
+            entry.output = Some(output);
+            entry.source = (!trashed).then_some(source);
+        }
+        if cx.active_window().is_none() {
+            settings::notify(
+                format!("Finished {title}"),
+                if single {
+                    "Ready as one M4B with chapters.".into()
+                } else {
+                    "Ready as chapter files.".into()
+                },
+            );
+        }
     }
 
     fn add_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
@@ -592,6 +819,7 @@ impl Earshelf {
                 progress: 0.0,
                 output: None,
             });
+            self.section = Section::Queue;
         }
         cx.notify();
     }
@@ -623,6 +851,27 @@ impl Earshelf {
         .detach();
     }
 
+    fn choose_output_folder(&mut self, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose the folder for converted audiobooks".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picker.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    this.settings.output_dir = Some(path);
+                    this.save_settings();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn connect(&mut self, _: &Connect, _: &mut Window, cx: &mut Context<Self>) {
         if self.connected || self.worker.is_some() {
             return;
@@ -633,7 +882,7 @@ impl Earshelf {
         self.login_session = self.login_session.wrapping_add(1);
         self.message = "Opening a secure Amazon sign-in window…".into();
         self.worker = Some(start_worker(
-            vec!["login".into(), self.locale.clone()],
+            vec!["login".into(), self.settings.locale.clone()],
             self.sender.clone(),
         ));
         cx.notify();
@@ -719,8 +968,9 @@ impl Earshelf {
             self.active = Some(index);
             self.books[index].state = State::Running;
             self.books[index].progress = 0.0;
+            let options = self.settings.options_json();
             let book = &mut self.books[index];
-            let args = match &book.asin {
+            let mut args = match &book.asin {
                 Some(asin) if book.path.as_os_str().is_empty() => {
                     book.detail = "Requesting download from Audible…".into();
                     vec!["fetch".into(), asin.clone()]
@@ -730,6 +980,7 @@ impl Earshelf {
                     vec!["convert".into(), book.path.to_string_lossy().into()]
                 }
             };
+            args.push(options);
             self.worker = Some(start_worker(args, self.sender.clone()));
         } else {
             self.queue_running = false;
@@ -742,7 +993,7 @@ impl Earshelf {
             self.message = reason.into();
         } else if !self.books.iter().any(|book| book.state == State::Queued) {
             self.message =
-                "Add an AAX file or queue a failed book again to start converting.".into();
+                "Nothing is waiting. Add an AAX file or pick books from the library.".into();
         } else {
             self.queue_running = true;
             self.next();
@@ -754,6 +1005,8 @@ impl Earshelf {
         if !self.connected || !self.library_ready || self.worker.is_some() {
             return;
         }
+        self.library_requested = true;
+        self.library_error = None;
         self.operation_failed = false;
         self.cancelling = false;
         self.operation = Some(Operation::LoadingLibrary);
@@ -761,35 +1014,111 @@ impl Earshelf {
         self.worker = Some(start_worker(vec!["library".into()], self.sender.clone()));
     }
 
-    fn download(&mut self, book: LibraryBook) {
+    fn queue_index(&self, asin: &str) -> Option<usize> {
+        self.books
+            .iter()
+            .position(|queued| queued.asin.as_deref() == Some(asin))
+    }
+
+    /// Queues library books and starts working if idle. Skips books already queued or converted.
+    /// Stops early, with a message, when the Mac would run out of disk space.
+    fn download_books(&mut self, asins: &[String]) {
         if !self.connected || self.operation == Some(Operation::LoggingOut) {
             return;
         }
-        if self
-            .books
+        let mut budget = self
+            .settings
+            .work_dirs()
             .iter()
-            .any(|queued| queued.asin.as_ref() == Some(&book.asin))
-        {
-            return;
+            .filter_map(|dir| settings::free_bytes(dir))
+            .min()
+            .map(|free| free.saturating_sub(500_000_000));
+        let mut added = 0;
+        let mut short = false;
+        for asin in asins {
+            let Some(book) = self
+                .library
+                .iter()
+                .flatten()
+                .find(|book| &book.asin == asin)
+                .cloned()
+            else {
+                continue;
+            };
+            if self.queue_index(asin).is_some() || book.output.is_some() {
+                continue;
+            }
+            let estimate = book.bytes.unwrap_or(400_000_000);
+            let need = if book.source.is_some() {
+                estimate
+            } else {
+                estimate * 2
+            };
+            if let Some(left) = budget.as_mut() {
+                if need > *left {
+                    short = true;
+                    break;
+                }
+                *left -= need;
+            }
+            self.books.push(Book {
+                path: PathBuf::new(),
+                asin: Some(book.asin),
+                title: book.title,
+                state: State::Queued,
+                detail: "Queued".into(),
+                progress: 0.0,
+                output: None,
+            });
+            added += 1;
         }
-        self.books.push(Book {
-            path: PathBuf::new(),
-            asin: Some(book.asin),
-            title: book.title,
-            state: State::Queued,
-            detail: "Queued".into(),
-            progress: 0.0,
-            output: None,
-        });
+        self.message = if short {
+            "Not enough free disk space for every selected book. The rest were not queued; free some space or choose another output folder in Settings.".into()
+        } else if added > 0 {
+            format!(
+                "Added {added} {} to the queue. Downloads go to ~/Downloads, then convert.",
+                if added == 1 { "book" } else { "books" }
+            )
+        } else {
+            "Nothing to add: those books are already queued or converted.".into()
+        };
+        self.kick();
+    }
+
+    fn kick(&mut self) {
         if self.worker.is_none()
             && conversion_blocker(None, self.connected, self.dependencies).is_none()
+            && self.books.iter().any(|book| book.state == State::Queued)
         {
             self.queue_running = true;
             self.next();
         } else if self.operation == Some(Operation::LoadingLibrary) {
             self.queue_running = true;
         }
-        self.message = "Added to the queue. It downloads to ~/Downloads, then converts.".into();
+    }
+
+    fn retry(&mut self, index: usize) {
+        if let Some(book) = self.books.get_mut(index)
+            && matches!(book.state, State::Failed | State::Cancelled)
+            && self.connected
+            && self.operation != Some(Operation::LoggingOut)
+        {
+            book.state = State::Queued;
+            book.detail = "Queued".into();
+            book.progress = 0.0;
+            self.kick();
+        }
+    }
+
+    fn remove(&mut self, index: usize) {
+        if self.connected
+            && self.active.is_none()
+            && self.operation != Some(Operation::LoggingOut)
+            && index < self.books.len()
+        {
+            self.books.remove(index);
+            self.cursor = None;
+        }
     }
 
     fn stop(&mut self) {
@@ -806,238 +1135,188 @@ impl Earshelf {
         }
     }
 
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        self.stop();
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+        } else if self.search_focus.is_focused(window)
+            || (!self.query.is_empty() && !self.working())
+        {
+            self.query.clear();
+            self.cursor = None;
+            self.focus.focus(window);
+        } else {
+            self.stop();
+        }
         cx.notify();
     }
-}
 
-fn button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    enabled: bool,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .px_4()
-        .py_2()
-        .rounded_lg()
-        .bg(rgb(0x253148))
-        .text_color(rgb(0xf2f5fa))
-        .text_sm()
-        .when(enabled, |element| {
-            element
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(0x344766)))
-        })
-        .when(!enabled, |element| {
-            element.opacity(0.45).cursor(gpui::CursorStyle::Arrow)
-        })
-        .child(label.into())
-}
+    fn diagnostics(&self, detail: &str) -> String {
+        format!(
+            "Earshelf {}\nmacOS {} ({})\nMarketplace: {}\nOutput: {} / {}\nProblem: {detail}",
+            env!("CARGO_PKG_VERSION"),
+            self.os_version,
+            std::env::consts::ARCH,
+            self.settings.locale,
+            self.settings.format.as_str(),
+            self.settings.layout.as_str(),
+        )
+    }
 
-impl Render for Earshelf {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = self.worker.is_some();
-        let signing_in = self.operation.is_some_and(Operation::is_login);
-        let waiting_for_url = self.operation == Some(Operation::LoginWaiting) && !self.cancelling;
-        let blocker = conversion_blocker(self.operation, self.connected, self.dependencies);
-        let queued = self
-            .books
-            .iter()
-            .filter(|book| book.state == State::Queued)
-            .count();
-        let can_convert = !busy && blocker.is_none() && queued > 0;
-        let can_edit_queue = self.active.is_none() && self.operation != Some(Operation::LoggingOut);
-        let queued_detail = if self.operation == Some(Operation::Converting) {
-            "Queued · starts after the current book"
-        } else {
-            blocker.unwrap_or("Ready · click Convert queue to start")
+    /// Indices into `library` that match the search, in the chosen order.
+    fn visible(&self) -> Vec<usize> {
+        let query = self.query.trim().to_lowercase();
+        let books = self.library.as_deref().unwrap_or_default();
+        let mut shown: Vec<usize> = (0..books.len())
+            .filter(|&index| query.is_empty() || books[index].matches(&query))
+            .collect();
+        match self.settings.sort {
+            Sort::Recent => {}
+            Sort::Title => shown.sort_by_key(|&i| books[i].title.to_lowercase()),
+            Sort::Author => shown.sort_by_key(|&i| {
+                (
+                    books[i].authors.to_lowercase(),
+                    books[i].title.to_lowercase(),
+                )
+            }),
+            Sort::Length => shown.sort_by_key(|&i| std::cmp::Reverse(books[i].minutes)),
+        }
+        shown
+    }
+
+    fn list_len(&self) -> usize {
+        match self.section {
+            Section::Library => self.visible().len(),
+            Section::Queue => self.books.len(),
+            Section::Settings => 0,
+        }
+    }
+
+    fn move_cursor(&mut self, delta: isize, window: &Window) {
+        let len = self.list_len();
+        if len == 0 {
+            return;
+        }
+        let next = match self.cursor {
+            None => 0,
+            Some(current) => (current as isize + delta).clamp(0, len as isize - 1) as usize,
         };
-        let status_color = if self.operation_failed {
-            0xf0b2a5
+        self.cursor = Some(next);
+        let columns = views::columns(window, self.settings.grid);
+        let row = if self.section == Section::Library && self.settings.grid {
+            next / columns
         } else {
-            0xb8d8fa
+            next
         };
+        self.list_scroll.scroll_to_item(row, ScrollStrategy::Center);
+    }
 
-        div().id("app").track_focus(&self.focus).size_full().flex().flex_col()
-            .bg(rgb(0x101621)).text_color(rgb(0xe8edf5)).font_family(".AppleSystemUIFont")
-            .p_5().gap_3()
-            .when(!self.connected, |element| element
-                .on_action(cx.listener(Self::connect))
-                .on_action(cx.listener(Self::paste_bytes)))
-            .when(self.connected, |element| element
-                .on_action(cx.listener(Self::add_files))
-                .on_action(cx.listener(Self::convert))
-                .on_action(cx.listener(Self::logout)))
-            .on_action(cx.listener(Self::cancel))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.add_paths(paths.paths(), cx)))
-            .child(div().flex_shrink_0().flex().justify_between().items_center()
-                .child(div().flex().flex_col().gap_1()
-                    .child(div().text_2xl().font_weight(gpui::FontWeight::BOLD).child("Earshelf"))
-                    .child(div().text_sm().text_color(rgb(0x94a3b8)).child(
-                        if self.connected { "One lossless M4A per chapter. Your originals stay untouched." }
-                        else { "Log in once to keep your Audible audiobooks as chapter files you own." })))
-                .when(self.connected, |element| element.child(div().flex().items_center().gap_3()
-                    .child(div().text_sm().text_color(rgb(0x8ae0b1)).child("Logged in"))
-                    .child(button("logout", if self.operation == Some(Operation::LoggingOut) { "Logging out…" } else { "Logout" }, !busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.logout(&Logout, window, cx))))))
-                .when(!self.connected, |element| element.child(div().text_sm().text_color(rgb(0x94a3b8))
-                    .child(if signing_in { "Logging in…" } else { "Not logged in" }))))
-            .child(div().flex_shrink_0().px_4().py_3().rounded_lg().bg(rgb(0x1b2b40))
-                .text_sm().text_color(rgb(status_color)).child(self.message.clone()))
-            .when(!self.connected, |element| element.child(
-                div().id("login-view").flex_1().min_h_0().overflow_y_scroll()
-                    .flex().flex_col().items_center().justify_center()
-                    .child(div().w_full().max_w(px(680.)).flex_shrink_0().flex().flex_col().gap_4()
-                        .child(div().text_xl().font_weight(gpui::FontWeight::BOLD).child("Log in to Audible"))
-                        .when(!signing_in, |element| element.child(
-                            div().p_5().rounded_xl().bg(rgb(0x192231)).flex().flex_col().gap_4()
-                                .child(div().text_sm().child("Choose the marketplace where your Audible library lives."))
-                                .child(div().flex().gap_2().children(
-                                    [("uk", "🇬🇧 UK"), ("us", "🇺🇸 US"), ("de", "🇩🇪 DE"), ("au", "🇦🇺 AU"), ("ca", "🇨🇦 CA"), ("fr", "🇫🇷 FR")]
-                                        .into_iter().map(|(code, label)| {
-                                            button(code, label, !busy)
-                                                .bg(rgb(if self.locale == code { 0x435d88 } else { 0x253148 }))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    if !this.connected && this.worker.is_none() {
-                                                        this.locale = code.into();
-                                                        cx.notify();
-                                                    }
-                                                }))
-                                        })))
-                                .child(button("connect", "Log in with Amazon  ⌘L", !busy).bg(rgb(0x32694e))
-                                    .on_click(cx.listener(|this, _, window, cx| this.connect(&Connect, window, cx))))
-                                .child(div().text_sm().text_color(rgb(0x94a3b8))
-                                    .child("The sign-in window captures the login result automatically. No URL copying needed."))
-                                .child(button("paste-bytes", "Use copied activation bytes  ⇧⌘V", !busy)
-                                    .on_click(cx.listener(|this, _, window, cx| this.paste_bytes(&PasteBytes, window, cx))))))
-            .when(signing_in, |element| element.child(
-                div().flex_shrink_0().p_4().rounded_xl().bg(rgb(0x192b40)).border_1()
-                    .border_color(rgb(0x43678e)).flex().flex_col().gap_3()
-                    .child(div().font_weight(gpui::FontWeight::BOLD).child(
-                        if self.cancelling { "Cancelling Audible sign-in…" }
-                        else if self.operation == Some(Operation::LoginFinishing) { "Fetching your activation bytes…" }
-                        else { "Sign in with Amazon" }))
-                    .when(self.operation != Some(Operation::LoginFinishing), |element| element.child(
-                        div().text_sm().flex().flex_col().gap_1()
-                            .child("Complete Amazon sign-in, MFA, or CAPTCHA in the sign-in window.")
-                            .child("The app captures the result automatically. Sign-in never opens an external browser.")))
-                    .when(self.operation == Some(Operation::LoginFinishing), |element| element.child(
-                        div().text_sm().child("The login result was received. No further action is needed.")))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(button("show-login", "Show sign-in window", waiting_for_url)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.operation == Some(Operation::LoginWaiting) && !this.cancelling {
-                                    this.open_login_window();
-                                    cx.notify();
-                                }
-                            })))
-                        .child(button("cancel-login", "Cancel sign-in  Esc", !self.cancelling)
-                            .on_click(cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)))))
-                    .child(div().text_xs().text_color(rgb(0x94a3b8))
-                        .child("This window discards its cookies when it closes. Passwords are never saved."))))
-                        .child(div().text_xs().text_color(rgb(0x94a3b8))
-                            .child("Activation bytes and your optional 1Password item choice are saved on this Mac. Your Amazon password and login session are not saved.")))))
-            .when(self.connected, |element| element.child(
-                div().id("converter-view").flex_1().min_h_0().flex().flex_col().gap_3()
-            .child(div().flex_shrink_0().flex().gap_2()
-                .child(button("show-queue", format!("Queue · {}", self.books.len()), true)
-                    .bg(rgb(if self.show_library { 0x253148 } else { 0x435d88 }))
-                    .on_click(cx.listener(|this, _, _, cx| { this.show_library = false; cx.notify(); })))
-                .child(button("show-library", "Audible library", true)
-                    .bg(rgb(if self.show_library { 0x435d88 } else { 0x253148 }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_library = true;
-                        if this.library.is_none() { this.load_library(); }
-                        cx.notify();
-                    }))))
-            .child(div().flex_shrink_0().flex().flex_col().gap_2()
-                .child(div().flex().items_center().gap_2()
-                    .child(button("add", "Add AAX files  ⌘O", self.operation != Some(Operation::LoggingOut))
-                        .on_click(cx.listener(|this, _, window, cx| this.add_files(&AddFiles, window, cx))))
-                    .child(button("convert", if queued == 0 { "Convert queue  ⌘R".into() }
-                        else { format!("Convert {queued} {}  ⌘R", if queued == 1 { "book" } else { "books" }) }, can_convert)
-                        .bg(rgb(0x32694e))
-                        .on_click(cx.listener(|this, _, window, cx| this.convert(&Convert, window, cx))))
-                    .when(self.operation == Some(Operation::Converting), |element| element.child(
-                        button("stop-conversion", "Stop conversion  Esc", !self.cancelling)
-                            .on_click(cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx))))))
-                .when_some(blocker, |element, reason| element.child(
-                    div().text_sm().text_color(rgb(0xf0c484)).child(reason))))
-            .when(self.show_library, |element| element.child(
-                div().id("library").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap_2()
-                    .when(!self.library_ready, |element| element.child(
-                        div().p_4().rounded_xl().bg(rgb(0x192231)).text_sm()
-                            .child("Log out, then log in with Amazon again to browse your library. Pasted activation bytes cannot download books.")))
-                    .when(self.library_ready, |element| element.child(
-                        div().flex_shrink_0().flex().items_center().justify_between().gap_3()
-                            .child(div().text_sm().text_color(rgb(0x94a3b8)).child(match &self.library {
-                                Some(books) => format!("{} downloadable books · saved to ~/Downloads, then converted", books.len()),
-                                None if self.operation == Some(Operation::LoadingLibrary) => "Loading…".into(),
-                                None => "Library not loaded yet.".into(),
-                            }))
-                            .child(button("refresh-library", if self.operation == Some(Operation::LoadingLibrary) { "Loading…" } else { "Refresh library" }, !busy)
-                                .on_click(cx.listener(|this, _, _, cx| { this.load_library(); cx.notify(); })))))
-                    .children(self.library.iter().flatten().enumerate().map(|(index, book)| {
-                        let queued_state = self.books.iter().find(|queued| queued.asin.as_ref() == Some(&book.asin)).map(|queued| &queued.state);
-                        let label = match queued_state {
-                            Some(State::Done) => "Converted",
-                            Some(State::Failed | State::Cancelled) => "In queue · retry there",
-                            Some(_) => "In queue",
-                            None => "Download & convert",
-                        };
-                        let enabled = queued_state.is_none() && self.operation != Some(Operation::LoggingOut);
-                        let choice = book.clone();
-                        div().flex_shrink_0().p_3().rounded_xl().bg(rgb(0x192231)).flex().items_center().justify_between().gap_3()
-                            .child(cover(book.cover.clone()))
-                            .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
-                                .child(div().child(book.title.clone()))
-                                .child(div().text_sm().text_color(rgb(0x94a3b8)).child(book.detail.clone())))
-                            .child(button(("download", index), label, enabled).when(enabled, |element| element.bg(rgb(0x32694e)))
-                                .on_click(cx.listener(move |this, _, _, cx| { this.download(choice.clone()); cx.notify(); })))
-                    }))))
-            .when(!self.show_library, |element| element
-            .child(div().flex_shrink_0().text_sm().text_color(rgb(0x94a3b8))
-                .child(format!("Audiobooks · {} total · {queued} waiting", self.books.len())))
-            .child(div().id("queue").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap_3()
-                .when(self.books.is_empty(), |element| element.child(
-                    div().h_32().flex_shrink_0().flex().items_center().justify_center().rounded_xl().border_1()
-                        .border_color(rgb(0x344155)).text_color(rgb(0x94a3b8))
-                        .child("Drop AAX files here, choose Add AAX files, or download from your Audible library.")))
-                .children(self.books.iter().enumerate().map(|(index, book)| {
-                    let output = book.output.clone();
-                    let retry = matches!(book.state, State::Failed | State::Cancelled);
-                    let artwork = book.asin.as_ref().and_then(|asin| self.library.iter().flatten().find(|entry| &entry.asin == asin)).and_then(|entry| entry.cover.clone());
-                    div().flex_shrink_0().p_4().rounded_xl().bg(rgb(0x192231)).flex().flex_col().gap_2()
-                        .child(div().flex().items_center().justify_between().gap_3()
-                            .when(artwork.is_some(), |element| element.child(cover(artwork)))
-                            .child(div().flex_1().min_w_0().child(book.title.clone()))
-                            .when_some(output, |element, path| element.child(
-                                button(("finder", index), "Show in Finder", true)
-                                    .on_click(move |_, _, cx| cx.reveal_path(&path))))
-                            .when(retry, |element| element.child(button(("retry", index), "Queue again", can_edit_queue)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.connected && this.active.is_none() && this.operation != Some(Operation::LoggingOut) {
-                                        this.books[index].state = State::Queued;
-                                        this.books[index].detail = "Queued".into();
-                                        this.books[index].progress = 0.0;
-                                        cx.notify();
-                                    }
-                                }))))
-                            .when(book.state != State::Running, |element| element.child(
-                                button(("remove", index), "Remove", can_edit_queue)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if this.connected && this.active.is_none() && this.operation != Some(Operation::LoggingOut) { this.books.remove(index); cx.notify(); }
-                                    })))))
-                        .child(div().text_sm().text_color(rgb(if retry { 0xf0b2a5 } else { 0x94a3b8 }))
-                            .child(if book.state == State::Queued { queued_detail.to_owned() } else { book.detail.clone() }))
-                        .when(matches!(book.state, State::Running | State::Done), |element| element.child(
-                            div().h(px(4.)).w_full().rounded_full().bg(rgb(0x253148))
-                                .child(div().h_full().w(gpui::relative(book.progress)).rounded_full().bg(rgb(0x8ae0b1)))))
-                })))
-            .child(div().flex_shrink_0().text_xs().text_color(rgb(0x94a3b8))
-                .child("Output folders are saved next to the source. Existing output folders are never replaced."))) ))
+    fn activate(&mut self, cx: &mut Context<Self>) {
+        let Some(cursor) = self.cursor else { return };
+        match self.section {
+            Section::Library => {
+                if let Some(&index) = self.visible().get(cursor) {
+                    let asin = self.library.as_ref().unwrap()[index].asin.clone();
+                    self.activate_book(&asin, cx);
+                }
+            }
+            Section::Queue => match self.books.get(cursor) {
+                Some(book) if book.output.is_some() => {
+                    cx.reveal_path(book.output.as_ref().unwrap())
+                }
+                Some(_) => self.retry(cursor),
+                None => {}
+            },
+            Section::Settings => {}
+        }
+    }
+
+    fn activate_book(&mut self, asin: &str, cx: &mut Context<Self>) {
+        match self.row_primary(asin) {
+            views::Primary::Fetch => self.download_books(&[asin.to_owned()]),
+            views::Primary::Reveal(path) => cx.reveal_path(&path),
+            views::Primary::Retry(index) => self.retry(index),
+            views::Primary::None => {}
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.connected || self.section == Section::Settings {
+            return;
+        }
+        let typing = self.search_focus.is_focused(window);
+        let grid = self.section == Section::Library && self.settings.grid;
+        let columns = views::columns(window, grid) as isize;
+        match event.keystroke.key.as_str() {
+            "down" => self.move_cursor(if grid { columns } else { 1 }, window),
+            "up" => self.move_cursor(if grid { -columns } else { -1 }, window),
+            "right" if grid && !typing => self.move_cursor(1, window),
+            "left" if grid && !typing => self.move_cursor(-1, window),
+            "enter" => {
+                self.focus.focus(window);
+                self.activate(cx);
+            }
+            "space" if !typing && self.section == Section::Library => {
+                if let Some(&index) = self
+                    .cursor
+                    .and_then(|c| self.visible().get(c).copied())
+                    .as_ref()
+                {
+                    let asin = self.library.as_ref().unwrap()[index].asin.clone();
+                    if !self.selected.remove(&asin) {
+                        self.selected.insert(asin);
+                    }
+                }
+            }
+            "backspace" | "delete" if !typing && self.section == Section::Queue => {
+                if let Some(cursor) = self.cursor
+                    && self
+                        .books
+                        .get(cursor)
+                        .is_some_and(|b| b.state != State::Running)
+                {
+                    self.remove(cursor);
+                }
+            }
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    fn search_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let before = self.query.len();
+        if keystroke.modifiers.platform {
+            if keystroke.key == "v"
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                self.query.push_str(&text.replace(['\n', '\r'], " "));
+            }
+        } else if keystroke.key == "backspace" {
+            self.query.pop();
+        } else if !keystroke.modifiers.control
+            && let Some(text) = &keystroke.key_char
+            && !text.chars().any(char::is_control)
+        {
+            self.query.push_str(text);
+        } else {
+            return;
+        }
+        if self.query.len() != before || keystroke.key == "backspace" {
+            self.cursor = None;
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn run_menu(&mut self, action: MenuAction, cx: &mut Context<Self>) {
+        self.menu = None;
+        match action {
+            MenuAction::Reveal(path) => cx.reveal_path(&path),
+            MenuAction::Download(asin) => self.download_books(&[asin]),
+            MenuAction::Retry(index) => self.retry(index),
+            MenuAction::Remove(index) => self.remove(index),
+            MenuAction::CopyTitle(title) => cx.write_to_clipboard(ClipboardItem::new_string(title)),
+        }
+        cx.notify();
     }
 }
 
@@ -1068,6 +1347,8 @@ fn main() {
                     gpui::MenuItem::action("Logout", Logout),
                     gpui::MenuItem::action("Paste activation bytes", PasteBytes),
                     gpui::MenuItem::separator(),
+                    gpui::MenuItem::action("Settings…", ShowSettings),
+                    gpui::MenuItem::separator(),
                     gpui::MenuItem::action("Quit Earshelf", Quit),
                 ],
             },
@@ -1079,6 +1360,15 @@ fn main() {
                     gpui::MenuItem::action("Cancel", Cancel),
                 ],
             },
+            gpui::Menu {
+                name: "View".into(),
+                items: vec![
+                    gpui::MenuItem::action("Library", ShowLibrary),
+                    gpui::MenuItem::action("Queue", ShowQueue),
+                    gpui::MenuItem::action("Find in library", FocusSearch),
+                    gpui::MenuItem::action("Select all books", SelectAll),
+                ],
+            },
         ]);
         cx.bind_keys([
             KeyBinding::new("cmd-o", AddFiles, None),
@@ -1088,9 +1378,14 @@ fn main() {
             KeyBinding::new("cmd-r", Convert, None),
             KeyBinding::new("escape", Cancel, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-1", ShowLibrary, None),
+            KeyBinding::new("cmd-2", ShowQueue, None),
+            KeyBinding::new("cmd-,", ShowSettings, None),
+            KeyBinding::new("cmd-f", FocusSearch, None),
+            KeyBinding::new("cmd-a", SelectAll, None),
         ]);
         cx.on_window_closed(|cx| cx.quit()).detach();
-        let bounds = Bounds::centered(None, size(px(900.), px(740.)), cx);
+        let bounds = Bounds::centered(None, size(px(1040.), px(780.)), cx);
         cx.open_window(
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
@@ -1098,7 +1393,7 @@ fn main() {
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(760.), px(620.))),
+                window_min_size: Some(size(px(840.), px(600.))),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Earshelf::new(window, cx)),
@@ -1142,17 +1437,32 @@ mod tests {
     }
 
     #[test]
-    fn library_rows_skip_invalid_entries_and_format_length() {
+    fn library_rows_skip_invalid_entries_and_keep_details() {
         let books = library_books(&json!([
-            {"asin": "B000000001", "title": "Sourcery", "authors": "Terry Pratchett", "minutes": 425, "cover": "/tmp/B000000001.jpg"},
-            {"asin": "B000000002", "title": "Anonymous", "authors": "", "minutes": 59},
+            {"asin": "B000000001", "title": "Sourcery", "authors": "Terry Pratchett", "narrators": "Nigel Planer",
+             "series": "Discworld", "sequence": "5", "minutes": 425, "kbps": 64, "bytes": 204000000,
+             "cover": "/tmp/B000000001.jpg", "output": "/tmp/Sourcery"},
+            {"asin": "B000000002", "title": "Anonymous", "minutes": 59},
             {"title": "Missing identifier"},
         ]));
         assert_eq!(books.len(), 2);
-        assert_eq!(books[0].detail, "Terry Pratchett · 7 h 05 min");
-        assert_eq!(books[1].detail, "0 h 59 min");
+        assert_eq!(books[0].length(), "7 h 05 min");
+        assert_eq!(books[1].length(), "0 h 59 min");
         assert_eq!(books[0].cover, Some(PathBuf::from("/tmp/B000000001.jpg")));
-        assert_eq!(books[1].cover, None);
+        assert_eq!(books[0].output, Some(PathBuf::from("/tmp/Sourcery")));
+        assert_eq!(
+            (
+                books[1].cover.clone(),
+                books[1].output.clone(),
+                books[1].bytes
+            ),
+            (None, None, None)
+        );
+        assert!(
+            books[0].matches("planer")
+                && books[0].matches("discworld")
+                && !books[0].matches("tolkien")
+        );
     }
 
     #[test]

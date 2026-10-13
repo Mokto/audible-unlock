@@ -62,7 +62,7 @@ GPUI is pinned to 0.2.2. The `font-kit` feature enables native macOS text render
 
 ## Logged out: sign-in view
 
-The app has two views. Without saved activation bytes it shows only sign-in and marketplace selection. With saved activation bytes it shows only the audiobook conversion queue and **Logout**. Existing activation bytes restore the logged-in view on launch.
+The app has two views. Without saved activation bytes it shows only sign-in and marketplace selection. With saved activation bytes it shows the library, the queue, and settings. Existing activation bytes restore the logged-in view on launch.
 
 1. Choose the marketplace where your Audible library lives (UK, US, DE, AU, CA, or FR).
 2. Click **Log in with Amazon**. A native WebKit window opens Amazon's sign-in page.
@@ -74,7 +74,7 @@ The sign-in window uses an ephemeral WebKit data store. It permits top-level nav
 
 Sign-in is embedded-only. There is no external-browser fallback or copied-URL flow. If Amazon cannot load, the window shows an error and offers **Retry sign-in** or **Cancel**. Clipboard editing works normally inside Amazon's fields. Passwords can be filled through the optional 1Password CLI integration below; Authenticator OTPs can also be filled; SMS/email verification codes and CAPTCHA remain manual.
 
-Existing `~/.audible/activation_bytes` is picked up automatically. On the sign-in view, you can also copy an eight-character key and click **Use copied activation bytes**.
+Existing `~/.audible/activation_bytes` is picked up automatically. Under **Advanced** on the sign-in view you can also copy an eight-character key and click **Use copied activation bytes**. The first launch shows a short "Before you start" note (what is saved where, books you own only); the last marketplace you chose is remembered.
 
 Passwords are entered only into Amazon's own page. The app never extracts existing page passwords or saves passwords. With 1Password CLI autofill, it handles the selected username/password in memory and sends them through WebKit argument bindings, not string-interpolated JavaScript. Redirect URLs travel through private process pipes, exist only in memory, and are not logged. The native window discards its cookie store when it closes. The Python helper stores the registered Audible device credentials (tokens and device key, never your password) in the macOS Keychain so the library can be listed and downloaded. The activation-byte file is saved atomically with mode 0600; the optional non-secret 1Password item reference is saved in app preferences. The app does not copy sign-in URLs to the clipboard.
 
@@ -98,55 +98,85 @@ Filling is restricted to the original HTTPS Amazon host, `/ap/` pages, and the m
 
 This is app-managed autofill, not a hosted 1Password browser extension. Live desktop approval and Amazon compatibility still require verification with your account.
 
-## Logged in: conversion view
+## Logged in
 
-**Logout** deregisters this app's Audible device, removes the Keychain sign-in and `~/.audible/activation_bytes`, clears the in-app queue, and returns to the sign-in view. If Amazon cannot be reached, local data is still removed and the app asks you to remove the device under Amazon's Content and Devices settings. It does not delete original audiobooks, converted files, or unrelated authentication files. Logout is disabled during a background operation; stop conversion first.
+The window has a sidebar with **Library**, **Queue**, **Settings**, an active-book progress card, and the account's marketplace with **Log out**. The Library opens first and loads on its own; the Queue shows a count badge, and the Dock icon shows how many books are left.
 
-Logout is local to this Mac. Because the activation-byte file is shared with the existing CLI conversion script, that script will also need activation bytes again. Logout does not sign out of Amazon in your regular browser.
+**Log out** deregisters this app's Audible device, removes the Keychain sign-in and `~/.audible/activation_bytes`, clears the in-app queue, and returns to the sign-in view. If Amazon cannot be reached, local data is still removed and the app asks you to remove the device under Amazon's Content and Devices settings. It does not delete original audiobooks, converted files, or unrelated authentication files. Logout is disabled during a background operation; stop conversion first. Logout is local to this Mac. Because the activation-byte file is shared with the existing CLI conversion script, that script will also need activation bytes again. Logout does not sign out of Amazon in your regular browser.
+
+Quitting or closing the window during a download or conversion asks for confirmation first. When a book finishes while Earshelf is in the background, macOS shows a notification (it appears under "Script Editor": AppleScript is the only way an ad-hoc signed app can post one).
 
 ## Audible library
 
-Click **Audible library** to list the downloadable single-part books in your library, newest purchases first. **Download & convert** adds a book to the queue; it downloads to `~/Downloads` and then converts like any other file.
+The library lists the downloadable single-part books in your account with cover, author, narrator, series and number, length, an estimated size (length × the codec bitrate, usually within a few percent), format (AAX bitrate or AAXC) and purchase date.
 
+- **Search** (⌘F) matches title, author, narrator and series. **Sort** by recent purchase, title, author or length. Switch between **List** and **Grid**. Both are virtualized, so large libraries scroll smoothly.
+- Earshelf remembers what you've done. Books already converted show **✓ Converted** with **Show in Finder**; downloaded but unconverted books show **Convert**. It checks `~/Downloads` and a small history file, so books converted by earlier versions are recognized too.
+- **Select** books with the checkboxes (or Space/⌘A) and **Download N**, or use **Download all new**. Before queueing, Earshelf checks free disk space (download plus output) and stops with a message instead of filling the disk.
+- Failures appear on the book's own row with **Retry**, and in the Queue with **Copy diagnostics** (app version, macOS, marketplace and the error; nothing secret).
+- Right-click a row for **Show in Finder**, **Download & convert**, **Retry** or **Copy title**. Arrow keys move, Return performs the row's main action.
 - AAX is requested first and decrypts with your activation bytes. Titles without AAX fall back to AAXC; its per-book key and IV are saved next to it as a mode-0600 `.voucher` file.
 - Downloads stream into a hidden staging directory and publish with an exclusive rename. Incomplete or cancelled downloads are discarded; existing files are never overwritten. An existing download with the same name is reused.
-- Cover artwork shows in library and queue rows. Covers download in the background after the list appears and are cached in `~/Library/Caches/earshelf/covers`; only HTTPS image responses up to 4 MB are kept.
+- Covers download in the background and are cached in `~/Library/Caches/earshelf/covers`; only HTTPS image responses up to 4 MB are kept.
 - Multi-part books, podcasts, and titles without offline rights are not listed.
 - Accounts connected by pasting activation bytes cannot browse the library; log out and log in with Amazon.
 
-## Convert
+## Queue and conversion
 
-Add or drag in AAX/AAXC files, or download from the library, then click **Convert queue**.
+Drop AAX/AAXC files on the window (or **Add AAX files**, ⌘O), or pick books in the library. Library books start on their own; added files wait for **Convert** (⌘R).
 
-- Books run sequentially; progress updates after each chapter.
-- Native AAC audio is copied without re-encoding.
-- Chapter titles, album, author, track numbers, and available cover art are preserved.
-- Outputs appear in a book-title folder next to the original file.
-- Conversion stages the entire book in a hidden temporary directory and publishes it using an exclusive macOS rename.
-- Existing output folders are never replaced, even if empty.
-- The original AAX files are never changed or deleted.
-- A failed book stops the queue. Use **Queue again**, then **Convert queue**.
-- Cancellation stops FFmpeg and removes normal staging output. A forced quit or power loss can leave a hidden `.earshelf-*` temporary directory next to the source; it is not treated as completed output.
+- Books run sequentially; progress updates after each chapter. **Stop** (Esc) cancels the current book.
+- Native AAC audio is copied without re-encoding. Chapter titles, album, author, track numbers, and cover art are preserved.
+- Conversion stages the whole book in a hidden temporary directory and publishes it with an exclusive macOS rename. Existing outputs are never replaced.
+- The original is never changed unless you turn on **Move the original to the Trash** in Settings. Then, after a successful conversion only, the AAX (and voucher) go to the Trash, where Finder's **Put Back** works.
+- A failed book stops the queue. **Retry** requeues it. **Clear finished** tidies the list.
+- Cancellation stops FFmpeg and removes normal staging output. A forced quit or power loss can leave a hidden `.earshelf-*` temporary directory in the output folder; it is not treated as completed output.
 
-M4A only. No player, library sync, or MP3. Manually added AAXC files need the matching `.voucher` next to them.
+M4A/M4B only. No player, library sync, or MP3. Manually added AAXC files need the matching `.voucher` next to them.
+
+## Settings
+
+| Setting | Options |
+|---|---|
+| Format | **Chapter files** (one lossless M4A per chapter, in a folder per book) or **Single M4B** (one lossless file with chapter markers, for Apple Books, Plex, Audiobookshelf and most players) |
+| Folder layout | **Flat**, or **Author / Series** (`Author/Series/Book 3 - Title`, which media servers sort automatically; books without a series go in `Author/Title`) |
+| Output folder | Next to the download (default) or any folder you choose. Free space is shown. |
+| Move the original to the Trash | Off by default |
+| Theme | System (default), Light or Dark |
+| Check for new versions | On by default. At launch Earshelf asks GitHub's public API for the latest release (via `curl`); nothing about you is sent. A banner offers the release page. It never downloads or installs anything. |
+
+Settings are saved in `~/Library/Application Support/Earshelf/settings.json`; the record of converted books is `history.json` beside it.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
+| ⌘1 / ⌘2 / ⌘, | Library / Queue / Settings |
+| ⌘F | Search the library |
+| ⌘A | Select all shown books |
+| ↑ ↓ (← → in the grid) | Move through the list |
+| Return | Main action of the highlighted row |
+| Space | Select or deselect the highlighted book |
+| ⌫ | Remove the highlighted queue item |
 | ⌘O | Add files |
-| ⌘L | Log in using a native sign-in window |
-| ⌥⌘L | Logout and forget saved activation bytes |
-| ⇧⌘V | Paste activation bytes |
-| ⌘R | Convert queue |
-| Esc | Cancel |
-| ⌘Q | Quit |
+| ⌘R | Convert the queue |
+| Esc | Close menu / clear search / stop the current book |
+| ⌘L / ⇧⌘V | Log in / paste activation bytes (signed-out view) |
+| ⌥⌘L | Log out |
+| ⌘Q | Quit (asks first if work is running) |
 
-In the native sign-in window, ⌘R retries sign-in, ⌘W closes the window, and the standard Cut/Copy/Paste/Select All shortcuts work on Amazon's fields. Core workflows have keyboard shortcuts. Full VoiceOver support is not implemented in this GPUI prototype.
+In the native sign-in window, ⌘R retries sign-in, ⌘W closes the window, and the standard Cut/Copy/Paste/Select All shortcuts work on Amazon's fields.
+
+## Known limitations
+
+- **Accessibility:** GPUI 0.2 has no accessibility tree, so **VoiceOver cannot read the interface yet**. This matters for an audiobook app; it is the biggest gap and will be revisited when GPUI gains support. The keyboard shortcuts above and the native sign-in window work without a mouse.
+- No input-method (IME) support in the search field, and no cursor movement within it.
+- Only Chapter/M4B output; no MP3. Intel support is built and tested under Rosetta only.
+- Notifications are posted through AppleScript and show "Script Editor" as their source.
 
 ## App icon
 
-The app uses a custom midnight-blue macOS tile with a gold open shackle, an audiobook, and a waveform. The icon includes standard and Retina sizes from 16 to 1024 pixels.
+The app uses a midnight-blue macOS tile with gold headphones over a shelf of book spines whose heights trace a sound wave. The icon includes standard and Retina sizes from 16 to 1024 pixels.
 
 Editable vector artwork is in `scripts/draw-icon.swift`. Regenerate the PNG and ICNS assets with `bash scripts/make-icon.sh`, then rebuild the app bundle. No design-tool dependencies are required.
 
@@ -160,7 +190,7 @@ cargo run --locked -- --check-text
 uv run --locked python -W error::ResourceWarning -m unittest discover -s backend -v
 ```
 
-Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, Keychain round-trips with an in-memory keyring, device deregistration on logout, library filtering and codec choice, local-HTTP download publication/cancellation, AAXC voucher validation, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, and real FFmpeg chapter splitting with artwork and metadata (also run against the bundled minimal FFmpeg once `scripts/build-ffmpeg.sh` has built it). The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication, library listing, or downloads.
+Tests include a real offline WebKit two-step autofill check with fake credentials (including quotes, HTML, and Unicode), leading-zero OTP filling, refusal of mismatched accounts, SMS challenges, CAPTCHA, existing/ambiguous fields, and stale origins/documents, all-account discovery with partial failures, large picker rows and safe cancellation, consecutive noninteractive CLI commands, safe error classification, CLI cancellation/timeouts, credential validation, and login/conversion blocking states, native redirect validation and ephemeral storage, an actual offline WebKit redirect interception, redirect/key validation, private key-file permissions, Keychain round-trips with an in-memory keyring, device deregistration on logout, library filtering and codec choice, local-HTTP download publication/cancellation, AAXC voucher validation, logout and failed-logout preservation, cancellation, cleanup, exclusive publication, settings persistence and update-version checks, M4B output with chapters, output folders and author/series layouts, converted-book history, and real FFmpeg chapter splitting with artwork and metadata (also run against the bundled minimal FFmpeg once `scripts/build-ffmpeg.sh` has built it). The WebKit integration test briefly opens a native window and requires a macOS desktop session. These checks do not validate live Amazon authentication, library listing, or downloads.
 
 ## License
 
