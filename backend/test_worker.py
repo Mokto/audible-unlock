@@ -96,6 +96,24 @@ class WorkerTests(unittest.TestCase):
             kinds = [json.loads(line)["kind"] for line in events.getvalue().splitlines()]
             self.assertEqual(kinds, ["warning", "logged_out"] if failure else ["logged_out"])
 
+    def test_logout_never_tests_the_authenticator_for_truthiness(self):
+        class Authenticator:  # mirrors audible.Authenticator, whose __len__ raises RecursionError
+            deregistered = False
+
+            def __len__(self):
+                raise RecursionError
+
+            def deregister_device(self):
+                self.deregistered = True
+
+        auth = Authenticator()
+        worker.save_bytes("abcd1234")
+        self.keyring.set_password(*worker.KEYCHAIN, "{}")
+        with patch.object(worker, "load_auth", return_value=auth), contextlib.redirect_stdout(io.StringIO()):
+            worker.logout()
+        self.assertTrue(auth.deregistered)
+        self.assertEqual(self.keyring.values, {})
+
     def test_auth_round_trips_through_keychain(self):
         auth = MagicMock()
         auth.to_dict.return_value = {"adp_token": "synthetic"}

@@ -421,7 +421,7 @@ def logout():
         auth = load_auth()
     except Exception:
         auth = None
-    if auth:
+    if auth is not None:  # audible's Authenticator.__len__ recurses forever, so never test its truthiness
         try:
             auth.deregister_device()
         except Exception:
